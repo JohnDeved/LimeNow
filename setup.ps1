@@ -13,6 +13,22 @@ $npmGlobalRoot = Join-Path $limeNowAppsRoot 'NpmGlobal'
 $npmCacheRoot = Join-Path $limeNowAppsRoot 'NpmCache'
 $nodeVersion = 'v24.18.0'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
+$gitRoot = Join-Path $limeNowAppsRoot 'Git'
+$gitVersion = '2.55.0.windows.3'
+$gitArchiveUrl = 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/PortableGit-2.55.0.3-64-bit.7z.exe'
+$gitArchiveHash = 'ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d'
+$ghRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
+$ghVersion = '2.96.0'
+$ghArchiveUrl = 'https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip'
+$ghArchiveHash = 'c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3'
+$vscodeRoot = Join-Path $limeNowAppsRoot 'VSCode'
+$vscodeVersion = '1.130.0'
+$vscodeArchiveUrl = 'https://vscode.download.prss.microsoft.com/dbazure/download/stable/1b6a188127eeaf9194f945eb6eb89a657e93c54c/VSCode-win32-x64-1.130.0.zip'
+$vscodeArchiveHash = '6bfc03daefd6cf7864dd27f9747c8c0c7e87c220'
+$terminalRoot = Join-Path $limeNowAppsRoot 'WindowsTerminal'
+$terminalVersion = '1.24.11911.0'
+$terminalArchiveUrl = 'https://github.com/microsoft/terminal/releases/download/v1.24.11911.0/Microsoft.WindowsTerminal_1.24.11911.0_x64.zip'
+$terminalArchiveHash = '7691efeb71c8dd0b95536c84e366fa4cf809a42c534912f9cefa1056534383bd'
 $modrinthRoot = 'I:\Apps\ModrinthApp'
 $modrinthDataRoot = 'I:\Apps\ModrinthData'
 $modrinthAppData = Join-Path $env:APPDATA 'ModrinthApp'
@@ -45,6 +61,21 @@ function Write-SetupLog {
     Add-Content -LiteralPath $logPath -Value $line
     if (-not $Startup) {
         Write-Host $Message
+    }
+}
+
+function Get-VerifiedDownload {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][string]$ExpectedHash,
+        [ValidateSet('SHA1', 'SHA256')][string]$Algorithm = 'SHA256'
+    )
+
+    Invoke-WebRequest -Uri $Uri -OutFile $Destination -UseBasicParsing -TimeoutSec 180
+    $actualHash = (Get-FileHash -LiteralPath $Destination -Algorithm $Algorithm).Hash.ToLowerInvariant()
+    if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) {
+        throw "$Algorithm checksum mismatch for $Uri. Expected $ExpectedHash but received $actualHash."
     }
 }
 
@@ -267,9 +298,213 @@ function Repair-NodeAndNpm {
     }
 }
 
+function Test-GitInstall {
+    $gitExecutable = Join-Path $gitRoot 'cmd\git.exe'
+    if (-not (Test-Path -LiteralPath $gitExecutable)) {
+        return $false
+    }
+    try {
+        $output = (& $gitExecutable --version 2>$null | Select-Object -First 1)
+        return $output -eq "git version $gitVersion"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Repair-Git {
+    if (Test-GitInstall) {
+        Write-SetupLog "Verified portable Git $gitVersion."
+        return
+    }
+
+    Write-SetupLog "Git is missing or incomplete; installing official Git for Windows $gitVersion."
+    $repairRoot = Join-Path $setupRoot ('git-repair-' + [Guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $repairRoot 'PortableGit.7z.exe'
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+    try {
+        Get-VerifiedDownload -Uri $gitArchiveUrl -Destination $archivePath -ExpectedHash $gitArchiveHash
+        $extract = Start-Process -FilePath $archivePath `
+            -ArgumentList '-y', "-o$extractPath" `
+            -Wait -PassThru -WindowStyle Hidden
+        if ($extract.ExitCode -ne 0 -or
+            -not (Test-Path -LiteralPath (Join-Path $extractPath 'cmd\git.exe'))) {
+            throw "Portable Git extraction failed with exit code $($extract.ExitCode)."
+        }
+        New-Item -ItemType Directory -Path $gitRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $extractPath -Force |
+            Copy-Item -Destination $gitRoot -Recurse -Force
+        if (-not (Test-GitInstall)) {
+            throw 'Git verification failed after installation.'
+        }
+        Write-SetupLog "Installed/repaired official portable Git $gitVersion."
+    }
+    finally {
+        if (Test-Path -LiteralPath $repairRoot) {
+            Remove-Item -LiteralPath $repairRoot -Recurse -Force
+        }
+    }
+}
+
+function Test-GitHubCliInstall {
+    $ghExecutable = Join-Path $ghRoot 'bin\gh.exe'
+    if (-not (Test-Path -LiteralPath $ghExecutable)) {
+        return $false
+    }
+    try {
+        $output = (& $ghExecutable --version 2>$null | Select-Object -First 1)
+        return $output -match "^gh version $([regex]::Escape($ghVersion))\b"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Repair-GitHubCli {
+    if (Test-GitHubCliInstall) {
+        Write-SetupLog "Verified portable GitHub CLI $ghVersion."
+        return
+    }
+
+    Write-SetupLog "GitHub CLI is missing or incomplete; installing official gh $ghVersion."
+    $repairRoot = Join-Path $setupRoot ('gh-repair-' + [Guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $repairRoot 'gh.zip'
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+    try {
+        Get-VerifiedDownload -Uri $ghArchiveUrl -Destination $archivePath -ExpectedHash $ghArchiveHash
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
+        if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe'))) {
+            throw 'The verified GitHub CLI archive has an unexpected layout.'
+        }
+        New-Item -ItemType Directory -Path $ghRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $extractPath -Force |
+            Copy-Item -Destination $ghRoot -Recurse -Force
+        if (-not (Test-GitHubCliInstall)) {
+            throw 'GitHub CLI verification failed after installation.'
+        }
+        Write-SetupLog "Installed/repaired official portable GitHub CLI $ghVersion."
+    }
+    finally {
+        if (Test-Path -LiteralPath $repairRoot) {
+            Remove-Item -LiteralPath $repairRoot -Recurse -Force
+        }
+    }
+}
+
+function Test-VSCodeInstall {
+    $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
+    $codeCommand = Join-Path $vscodeRoot 'bin\code.cmd'
+    if (-not (Test-Path -LiteralPath $codeExecutable) -or
+        -not (Test-Path -LiteralPath $codeCommand) -or
+        -not (Test-Path -LiteralPath (Join-Path $vscodeRoot 'data'))) {
+        return $false
+    }
+    return (Get-Item -LiteralPath $codeExecutable).VersionInfo.ProductVersion -like "$vscodeVersion*"
+}
+
+function Repair-VSCode {
+    if (Test-VSCodeInstall) {
+        Write-SetupLog "Verified portable Visual Studio Code $vscodeVersion."
+        return
+    }
+    if (Get-Process -Name 'Code' -ErrorAction SilentlyContinue) {
+        throw 'Visual Studio Code needs repair but is running. Close it and run LimeNow again.'
+    }
+
+    Write-SetupLog "Visual Studio Code is missing or incomplete; installing official portable VS Code $vscodeVersion."
+    $repairRoot = Join-Path $setupRoot ('vscode-repair-' + [Guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $repairRoot 'vscode.zip'
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+    try {
+        Get-VerifiedDownload -Uri $vscodeArchiveUrl -Destination $archivePath `
+            -ExpectedHash $vscodeArchiveHash -Algorithm SHA1
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
+        if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'Code.exe')) -or
+            -not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\code.cmd'))) {
+            throw 'The verified Visual Studio Code archive has an unexpected layout.'
+        }
+        New-Item -ItemType Directory -Path $vscodeRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $extractPath -Force |
+            Where-Object Name -NE 'data' |
+            Copy-Item -Destination $vscodeRoot -Recurse -Force
+        New-Item -ItemType Directory -Path (Join-Path $vscodeRoot 'data') -Force | Out-Null
+        if (-not (Test-VSCodeInstall)) {
+            throw 'Visual Studio Code verification failed after installation.'
+        }
+        Write-SetupLog "Installed/repaired official portable Visual Studio Code $vscodeVersion."
+    }
+    finally {
+        if (Test-Path -LiteralPath $repairRoot) {
+            Remove-Item -LiteralPath $repairRoot -Recurse -Force
+        }
+    }
+}
+
+function Test-WindowsTerminalInstall {
+    $terminalExecutable = Join-Path $terminalRoot 'WindowsTerminal.exe'
+    $versionMarker = Join-Path $terminalRoot 'LIMENOW-VERSION'
+    return (Test-Path -LiteralPath $terminalExecutable) -and
+        (Test-Path -LiteralPath (Join-Path $terminalRoot '.portable')) -and
+        (Test-Path -LiteralPath $versionMarker) -and
+        ((Get-Content -LiteralPath $versionMarker -Raw).Trim() -eq $terminalVersion)
+}
+
+function Repair-WindowsTerminal {
+    if (Test-WindowsTerminalInstall) {
+        Write-SetupLog "Verified portable Windows Terminal $terminalVersion."
+        return
+    }
+    if (Get-Process -Name 'WindowsTerminal' -ErrorAction SilentlyContinue) {
+        throw 'Windows Terminal needs repair but is running. Close it and run LimeNow again.'
+    }
+
+    Write-SetupLog "Windows Terminal is missing or incomplete; installing official portable Terminal $terminalVersion."
+    $repairRoot = Join-Path $setupRoot ('terminal-repair-' + [Guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $repairRoot 'terminal.zip'
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+    try {
+        Get-VerifiedDownload -Uri $terminalArchiveUrl -Destination $archivePath -ExpectedHash $terminalArchiveHash
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
+        $packageRoot = Get-ChildItem -LiteralPath $extractPath -Directory |
+            Where-Object Name -Like 'terminal-*' |
+            Select-Object -First 1
+        if (-not $packageRoot -or
+            -not (Test-Path -LiteralPath (Join-Path $packageRoot.FullName 'WindowsTerminal.exe'))) {
+            throw 'The verified Windows Terminal archive has an unexpected layout.'
+        }
+        New-Item -ItemType Directory -Path $terminalRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $packageRoot.FullName -Force |
+            Where-Object Name -NotIn @('.portable', 'settings', 'LIMENOW-VERSION') |
+            Copy-Item -Destination $terminalRoot -Recurse -Force
+        New-Item -ItemType File -Path (Join-Path $terminalRoot '.portable') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $terminalRoot 'LIMENOW-VERSION') `
+            -Value $terminalVersion -Encoding ASCII
+        if (-not (Test-WindowsTerminalInstall)) {
+            throw 'Windows Terminal verification failed after installation.'
+        }
+        Write-SetupLog "Installed/repaired official portable Windows Terminal $terminalVersion."
+    }
+    finally {
+        if (Test-Path -LiteralPath $repairRoot) {
+            Remove-Item -LiteralPath $repairRoot -Recurse -Force
+        }
+    }
+}
+
 function Ensure-DeveloperEnvironment {
     New-Item -ItemType Directory -Path $npmGlobalRoot, $npmCacheRoot -Force | Out-Null
-    $requiredPathEntries = @($nodeRoot, $npmGlobalRoot)
+    $requiredPathEntries = @(
+        $nodeRoot,
+        $npmGlobalRoot,
+        (Join-Path $gitRoot 'cmd'),
+        (Join-Path $ghRoot 'bin'),
+        (Join-Path $vscodeRoot 'bin'),
+        $terminalRoot
+    )
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $userParts = @($userPath -split ';' | Where-Object { $_ })
@@ -299,7 +534,7 @@ function Ensure-DeveloperEnvironment {
     [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', '1', 'User')
     [Environment]::SetEnvironmentVariable('NPM_CONFIG_PREFIX', $npmGlobalRoot, 'User')
     [Environment]::SetEnvironmentVariable('NPM_CONFIG_CACHE', $npmCacheRoot, 'User')
-    Write-SetupLog 'Verified persistent Node.js/npm PATH and Windows certificate-store support.'
+    Write-SetupLog 'Verified persistent developer-tool PATH and Windows certificate-store support.'
 }
 
 function Test-CodexInstall {
@@ -356,11 +591,20 @@ function Ensure-DeveloperCommandShims {
         'npm.cmd' = Join-Path $nodeRoot 'npm.cmd'
         'npx.cmd' = Join-Path $nodeRoot 'npx.cmd'
         'codex.cmd' = Join-Path $npmGlobalRoot 'codex.cmd'
+        'git.cmd' = Join-Path $gitRoot 'cmd\git.exe'
+        'gh.cmd' = Join-Path $ghRoot 'bin\gh.exe'
+        'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
+        'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
     }
 
     foreach ($entry in $commands.GetEnumerator()) {
         $shimPath = Join-Path $shimRoot $entry.Key
-        $callKeyword = if ($entry.Key -eq 'node.cmd') { '' } else { 'call ' }
+        $callKeyword = if ($entry.Value.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+            'call '
+        }
+        else {
+            ''
+        }
         $shim = @"
 @echo off
 REM LimeNow managed developer command shim
@@ -375,7 +619,7 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, and Codex command shims.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, gh, code, and wt command shims.'
 }
 
 function Ensure-CodexShortcut {
@@ -407,6 +651,36 @@ call "$codexCommand" %*
     $shortcut.IconLocation = "$(Join-Path $nodeRoot 'node.exe'),0"
     $shortcut.Save()
     Write-SetupLog 'Verified persistent Codex CLI desktop shortcut.'
+}
+
+function Ensure-DeveloperDesktopShortcuts {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $shell = New-Object -ComObject WScript.Shell
+
+    $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
+    if (-not (Test-Path -LiteralPath $codeExecutable)) {
+        throw "Visual Studio Code executable is missing: $codeExecutable"
+    }
+    $codeShortcut = $shell.CreateShortcut((Join-Path $desktop 'Visual Studio Code.lnk'))
+    $codeShortcut.TargetPath = $codeExecutable
+    $codeShortcut.WorkingDirectory = $documentsRoot
+    $codeShortcut.Description = 'Visual Studio Code (persistent LimeNow portable installation)'
+    $codeShortcut.IconLocation = "$codeExecutable,0"
+    $codeShortcut.Save()
+
+    $terminalExecutable = Join-Path $terminalRoot 'WindowsTerminal.exe'
+    if (-not (Test-Path -LiteralPath $terminalExecutable)) {
+        throw "Windows Terminal executable is missing: $terminalExecutable"
+    }
+    $terminalShortcut = $shell.CreateShortcut((Join-Path $desktop 'Windows Terminal.lnk'))
+    $terminalShortcut.TargetPath = $terminalExecutable
+    $terminalShortcut.Arguments = "-d `"$documentsRoot`" cmd.exe"
+    $terminalShortcut.WorkingDirectory = $documentsRoot
+    $terminalShortcut.Description = 'Portable Windows Terminal with Command Prompt (LimeNow)'
+    $terminalShortcut.IconLocation = "$terminalExecutable,0"
+    $terminalShortcut.Save()
+
+    Write-SetupLog 'Verified persistent Visual Studio Code and Windows Terminal desktop shortcuts.'
 }
 
 function Get-LimeNowModrinthAsset {
@@ -637,10 +911,15 @@ try {
     Ensure-SetupCopies
     Ensure-StartupHook
     Repair-NodeAndNpm
+    Repair-Git
+    Repair-GitHubCli
+    Repair-VSCode
+    Repair-WindowsTerminal
     Ensure-DeveloperEnvironment
     Repair-CodexCli
     Ensure-DeveloperCommandShims
     Ensure-CodexShortcut
+    Ensure-DeveloperDesktopShortcuts
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher
     Ensure-ModrinthShortcut
