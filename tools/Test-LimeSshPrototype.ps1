@@ -518,6 +518,40 @@ try {
         throw "Remote child process survived command/channel completion: $($survivors.Id -join ', ')."
     }
 
+    $existingPingIds = @(
+        Get-Process ping -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Id
+    )
+    $disconnectSession = Start-CapturedProcess `
+        -FilePath (Get-Command ssh.exe).Source `
+        -Arguments ($concurrentArgs + @('ping.exe -n 60 127.0.0.1'))
+    Start-Sleep -Seconds 1
+    $disconnectPingIds = @(
+        Get-Process ping -ErrorAction SilentlyContinue |
+            Where-Object { $_.Id -notin $existingPingIds } |
+            Select-Object -ExpandProperty Id
+    )
+    if ($disconnectPingIds.Count -lt 1) {
+        if (-not $disconnectSession.HasExited) {
+            $disconnectSession.Kill($true)
+            $disconnectSession.WaitForExit()
+        }
+        throw 'The forced-disconnect command did not start its child process.'
+    }
+    $disconnectSession.Kill($true)
+    $disconnectSession.WaitForExit()
+    $disconnectDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ((Get-Process -Id $disconnectPingIds -ErrorAction SilentlyContinue) -and
+        [DateTime]::UtcNow -lt $disconnectDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    $disconnectSurvivors = @(
+        Get-Process -Id $disconnectPingIds -ErrorAction SilentlyContinue
+    )
+    if ($disconnectSurvivors.Count -ne 0) {
+        throw "Remote process survived forced SSH client termination: $($disconnectSurvivors.Id -join ', ')."
+    }
+
     [pscustomobject]@{
         SessionTarget = $sshTarget
         Interactive = $interactiveStatus
@@ -530,6 +564,7 @@ try {
         IPv6LoopbackForwarding = 'passed'
         NonLoopbackRejection = 'passed'
         ProcessTreeCleanupOnExit = 'passed'
+        AbruptDisconnectCleanup = 'passed'
     }
 }
 finally {

@@ -109,18 +109,12 @@ The pinned prototype currently passes a loopback self-hosted-relay test for:
   validation through the IPv4 path;
 - explicit rejection of a non-loopback forwarding destination;
 - termination of a background child through the Windows job object after the
-  primary command and SSH channel complete.
+  primary command and SSH channel complete;
+- prompt termination of an active command after the local OpenSSH process is
+  forcibly terminated.
 
-This proves gates 1-6 and 8 on the current Windows machine, plus the
-normal-completion path of gate 7. It does not yet prove cleanup after an
-abruptly disconnected client, a NAT-restricted host, VS Code, or GFN.
-
-An explicit forced-client-termination test remains failing: terminating the
-local OpenSSH process while a relay-hosted exec is active does not promptly
-cancel the host-side session, and the command remains alive beyond ten seconds.
-Normal command/channel completion does close the job object and terminate its
-background child. Gate 7 therefore remains open until the relay or SSH session
-handler provides a reliable channel-close signal for abrupt disconnects.
+This proves gates 1-8 on the current Windows machine. It does not yet prove a
+NAT-restricted host, VS Code, or GFN.
 
 ## Completed independent work
 

@@ -65,7 +65,8 @@ try {
         (Join-Path $sourceRoot 'host\internal\machine_exec_windows.go') `
         (Join-Path $sourceRoot 'host\internal\machine_mode_test.go') `
         (Join-Path $sourceRoot 'host\internal\sftp.go') `
-        (Join-Path $sourceRoot 'host\signer.go')
+        (Join-Path $sourceRoot 'host\signer.go') `
+        (Join-Path $sourceRoot 'server\sshhandler.go')
 
     Push-Location $sourceRoot
     try {

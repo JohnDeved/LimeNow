@@ -12,7 +12,8 @@ Subject: [PATCH] Add LimeSSH machine mode
  host/internal/server.go               | 128 ++++++++++++++++++++++----
  host/internal/sftp.go                 |   6 +-
  host/signer.go                        |   6 ++
- 8 files changed, 258 insertions(+), 26 deletions(-)
+ server/sshhandler.go                  |  14 ++-
+ 9 files changed, 267 insertions(+), 31 deletions(-)
  create mode 100644 host/internal/machine_exec_other.go
  create mode 100644 host/internal/machine_exec_windows.go
  create mode 100644 host/internal/machine_mode_test.go
@@ -521,3 +522,64 @@ index e97b128..f0c1bf1 100644
  func SignersFromFiles(privateKeys []string) ([]ssh.Signer, error) {
  	var signers []ssh.Signer
  	for _, file := range privateKeys {
+diff --git a/server/sshhandler.go b/server/sshhandler.go
+index ec2b6c5..c5c51ba 100644
+--- a/server/sshhandler.go
++++ b/server/sshhandler.go
+@@ -10,8 +10,8 @@ import (
+ 
+ 	"github.com/charmbracelet/ssh"
+ 	"github.com/oklog/run"
+-	"log/slog"
+ 	gossh "golang.org/x/crypto/ssh"
++	"log/slog"
+ )
+ 
+ const (
+@@ -118,6 +118,10 @@ func (h *streamlocalForwardHandler) handleConnection(ctx ssh.Context, conn *goss
+ 			logger.Debug("error closing SSH channel", "error", err)
+ 		}
+ 	}()
++	closeConnections := func() {
++		_ = localConn.Close()
++		_ = ch.Close()
++	}
+ 
+ 	var g run.Group
+ 
+@@ -127,7 +131,7 @@ func (h *streamlocalForwardHandler) handleConnection(ctx ssh.Context, conn *goss
+ 			<-ctx.Done()
+ 			return ctx.Err()
+ 		}, func(err error) {
+-			// Context cancelled, close all connections
++			closeConnections()
+ 		})
+ 	}
+ 
+@@ -137,7 +141,7 @@ func (h *streamlocalForwardHandler) handleConnection(ctx ssh.Context, conn *goss
+ 			gossh.DiscardRequests(reqs)
+ 			return nil
+ 		}, func(err error) {
+-			// Requests handler stopped
++			closeConnections()
+ 		})
+ 	}
+ 
+@@ -147,7 +151,7 @@ func (h *streamlocalForwardHandler) handleConnection(ctx ssh.Context, conn *goss
+ 			_, err := io.Copy(ch, localConn)
+ 			return err
+ 		}, func(err error) {
+-			// Copy stopped
++			closeConnections()
+ 		})
+ 	}
+ 
+@@ -157,7 +161,7 @@ func (h *streamlocalForwardHandler) handleConnection(ctx ssh.Context, conn *goss
+ 			_, err := io.Copy(localConn, ch)
+ 			return err
+ 		}, func(err error) {
+-			// Copy stopped
++			closeConnections()
+ 		})
+ 	}
+ 

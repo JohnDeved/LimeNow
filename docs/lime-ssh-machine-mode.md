@@ -23,7 +23,7 @@ runs the focused unit and compile tests, and writes the prototype binary under
 validates public-key authentication, interactive ConPTY, independent and
 concurrent exec, exit status 7, SFTP, current `scp`, loopback forwarding,
 to both `127.0.0.1` and `::1`, non-loopback rejection, and job cleanup after
-command/channel completion.
+both normal command/channel completion and forced client termination.
 Temporary source, toolchain, keys, and relay state are removed afterward.
 
 ## Behavioral delta from Upterm
