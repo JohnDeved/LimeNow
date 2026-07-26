@@ -3,7 +3,8 @@ param(
     [string]$UptermCommit = '1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9',
     [string]$GoVersion = '1.26.5',
     [string]$GoArchiveSha256 = '97e6b2a833b6d89f9ff17d25419ac0a7e3b482a044e9ab18cdef834bd834fd38',
-    [string]$OutputPath = (Join-Path $PSScriptRoot '..\artifacts\limessh-prototype.exe')
+    [string]$OutputPath = (Join-Path $PSScriptRoot '..\artifacts\limessh-prototype.exe'),
+    [string]$RelayOutputPath = (Join-Path $PSScriptRoot '..\artifacts\uptermd-prototype.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +83,12 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'LimeSSH prototype build failed.'
         }
+        $resolvedRelayOutput = [IO.Path]::GetFullPath($RelayOutputPath)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedRelayOutput) -Force | Out-Null
+        & $go build -trimpath -o $resolvedRelayOutput ./cmd/uptermd
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Pinned uptermd prototype build failed.'
+        }
     }
     finally {
         Pop-Location
@@ -93,6 +100,8 @@ try {
         GoVersion = $GoVersion
         OutputPath = $resolvedOutput
         Sha256 = $binaryHash
+        RelayOutputPath = $resolvedRelayOutput
+        RelaySha256 = (Get-FileHash -LiteralPath $resolvedRelayOutput -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
 finally {

@@ -95,6 +95,19 @@ Only after gates 1-12 pass may LimeNow integrate GitHub public-key enrollment,
 display the session-scoped SSH command and VS Code configuration, or document
 remote access as supported.
 
+## Current prototype evidence
+
+The pinned prototype currently passes a loopback self-hosted-relay test for:
+
+- public-key-only authentication;
+- independent non-interactive exec with expected stdout;
+- propagation of Windows exit status 7;
+- the SFTP subsystem.
+
+This proves only part of gates 2, 4, 8, and 10 on the current Windows machine.
+It does not yet prove interactive ConPTY sessions, concurrent channels, `scp`,
+TCP forwarding, process cleanup, a NAT-restricted host, VS Code, or GFN.
+
 ## Completed independent work
 
 The setup no longer installs or repairs Codex CLI or GitHub CLI. It removes

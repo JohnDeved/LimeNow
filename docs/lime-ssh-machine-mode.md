@@ -13,12 +13,15 @@ pinned source with:
 
 ```powershell
 & .\tools\Build-LimeSshPrototype.ps1
+& .\tools\Test-LimeSshPrototype.ps1
 ```
 
 The build harness downloads the checksum-pinned Go toolchain into a temporary
 directory, checks out the pinned Upterm commit, verifies and applies the patch,
 runs the focused unit and compile tests, and writes the prototype binary under
-`artifacts`. Temporary source and toolchain files are removed afterward.
+`artifacts`. The end-to-end harness starts the pinned relay on loopback and
+validates public-key authentication, an exec command, exit status 7, and SFTP.
+Temporary source, toolchain, keys, and relay state are removed afterward.
 
 ## Behavioral delta from Upterm
 

@@ -6,12 +6,12 @@ Subject: [PATCH] Add LimeSSH machine mode
 ---
  cmd/upterm/command/host.go            |  30 ++++++-
  host/host.go                          |   4 +
- host/internal/machine_exec_other.go   |   9 +++
- host/internal/machine_exec_windows.go |  38 +++++++++
- host/internal/machine_mode_test.go    |  53 ++++++++++++
- host/internal/server.go               | 111 +++++++++++++++++++++-----
+ host/internal/machine_exec_other.go   |   9 ++
+ host/internal/machine_exec_windows.go |  38 ++++++++
+ host/internal/machine_mode_test.go    |  53 +++++++++++
+ host/internal/server.go               | 121 +++++++++++++++++++++-----
  host/signer.go                        |   6 ++
- 7 files changed, 228 insertions(+), 23 deletions(-)
+ 7 files changed, 238 insertions(+), 23 deletions(-)
  create mode 100644 host/internal/machine_exec_other.go
  create mode 100644 host/internal/machine_exec_windows.go
  create mode 100644 host/internal/machine_mode_test.go
@@ -241,7 +241,7 @@ index 0000000..bc47b63
 +	}
 +}
 diff --git a/host/internal/server.go b/host/internal/server.go
-index 81fd6d6..849a8be 100644
+index 81fd6d6..ef1e781 100644
 --- a/host/internal/server.go
 +++ b/host/internal/server.go
 @@ -8,6 +8,8 @@ import (
@@ -392,12 +392,12 @@ index 81fd6d6..849a8be 100644
  		if err != nil {
  			h.logger.Error("error starting force command", "error", err)
  			_ = sess.Exit(1)
-@@ -333,6 +367,43 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+@@ -333,6 +367,53 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
  	}
  }
  
 +func (h *sessionHandler) handleMachineExec(sess gssh.Session) {
-+	ctx, cancel := context.WithCancel(h.ctx)
++	ctx, cancel := context.WithCancel(sess.Context())
 +	defer cancel()
 +
 +	rawCommand := sess.RawCommand()
@@ -407,11 +407,21 @@ index 81fd6d6..849a8be 100644
 +	} else {
 +		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", rawCommand)
 +	}
-+	cmd.Stdin = sess
 +	cmd.Stdout = sess
 +	cmd.Stderr = sess.Stderr()
 +
-+	err := runMachineExec(cmd)
++	stdin, err := cmd.StdinPipe()
++	if err != nil {
++		h.logger.Error("machine-mode stdin pipe failed", "error", err)
++		_ = sess.Exit(1)
++		return
++	}
++	go func() {
++		_, _ = io.Copy(stdin, sess)
++		_ = stdin.Close()
++	}()
++
++	err = runMachineExec(cmd)
 +	if exitError, ok := err.(*exec.ExitError); ok {
 +		_ = sess.Exit(exitError.ExitCode())
 +		return
