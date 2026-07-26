@@ -17,10 +17,6 @@ $gitRoot = Join-Path $limeNowAppsRoot 'Git'
 $gitVersion = '2.55.0.windows.3'
 $gitArchiveUrl = 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/PortableGit-2.55.0.3-64-bit.7z.exe'
 $gitArchiveHash = 'ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d'
-$ghRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
-$ghVersion = '2.96.0'
-$ghArchiveUrl = 'https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip'
-$ghArchiveHash = 'c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3'
 $vscodeRoot = Join-Path $limeNowAppsRoot 'VSCode'
 $vscodeVersion = '1.130.0'
 $vscodeArchiveUrl = 'https://vscode.download.prss.microsoft.com/dbazure/download/stable/1b6a188127eeaf9194f945eb6eb89a657e93c54c/VSCode-win32-x64-1.130.0.zip'
@@ -360,50 +356,6 @@ function Repair-Git {
     }
 }
 
-function Test-GitHubCliInstall {
-    $ghExecutable = Join-Path $ghRoot 'bin\gh.exe'
-    if (-not (Test-Path -LiteralPath $ghExecutable)) {
-        return $false
-    }
-    try {
-        $output = (& $ghExecutable --version 2>$null | Select-Object -First 1)
-        return $output -match "^gh version $([regex]::Escape($ghVersion))\b"
-    }
-    catch {
-        return $false
-    }
-}
-
-function Repair-GitHubCli {
-    if (Test-GitHubCliInstall) {
-        Write-SetupLog "Verified portable GitHub CLI $ghVersion."
-        return
-    }
-
-    Write-SetupLog "GitHub CLI is missing or incomplete; installing official gh $ghVersion."
-    $repairRoot = Join-Path $setupRoot ('gh-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'gh.zip'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-    try {
-        Get-VerifiedDownload -Uri $ghArchiveUrl -Destination $archivePath -ExpectedHash $ghArchiveHash
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe'))) {
-            throw 'The verified GitHub CLI archive has an unexpected layout.'
-        }
-        New-Item -ItemType Directory -Path $ghRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $extractPath -Force |
-            Copy-Item -Destination $ghRoot -Recurse -Force
-        if (-not (Test-GitHubCliInstall)) {
-            throw 'GitHub CLI verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable GitHub CLI $ghVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
-}
-
 function Test-VSCodeInstall {
     $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
     $codeCommand = Join-Path $vscodeRoot 'bin\code.cmd'
@@ -508,13 +460,13 @@ function Ensure-DeveloperEnvironment {
         $nodeRoot,
         $npmGlobalRoot,
         (Join-Path $gitRoot 'cmd'),
-        (Join-Path $ghRoot 'bin'),
         (Join-Path $vscodeRoot 'bin'),
         $terminalRoot
     )
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $userParts = @($userPath -split ';' | Where-Object { $_ })
+    $obsoleteGhPath = Join-Path $limeNowAppsRoot 'GitHubCLI\bin'
+    $userParts = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
     $newUserParts = @($requiredPathEntries)
     foreach ($part in $userParts) {
         if (-not ($newUserParts | Where-Object { $_ -eq $part })) {
@@ -526,7 +478,7 @@ function Ensure-DeveloperEnvironment {
         [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
     }
 
-    $processParts = @($env:Path -split ';' | Where-Object { $_ })
+    $processParts = @($env:Path -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
     $newProcessParts = @($requiredPathEntries)
     foreach ($part in $processParts) {
         if (-not ($newProcessParts | Where-Object { $_ -eq $part })) {
@@ -544,52 +496,6 @@ function Ensure-DeveloperEnvironment {
     Write-SetupLog 'Verified persistent developer-tool PATH and Windows certificate-store support.'
 }
 
-function Test-CodexInstall {
-    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
-    $packageManifest = Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
-    if (-not (Test-Path -LiteralPath $codexCommand) -or
-        -not (Test-Path -LiteralPath $packageManifest)) {
-        return $false
-    }
-
-    try {
-        $versionOutput = (& $codexCommand --version 2>$null | Select-Object -First 1)
-        return $versionOutput -match '^codex-cli\s+\S+'
-    }
-    catch {
-        return $false
-    }
-}
-
-function Repair-CodexCli {
-    if (Test-CodexInstall) {
-        $manifest = Get-Content -LiteralPath (Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json') -Raw |
-            ConvertFrom-Json
-        Write-SetupLog "Verified official Codex CLI $($manifest.version)."
-        return
-    }
-
-    $npmCommand = Join-Path $nodeRoot 'npm.cmd'
-    Write-SetupLog 'Codex CLI is missing or incomplete; installing official @openai/codex.'
-    & $npmCommand install --global '@openai/codex@latest' `
-        --prefix $npmGlobalRoot `
-        --cache $npmCacheRoot `
-        --no-audit `
-        --no-fund `
-        --loglevel error
-    $npmSucceeded = $?
-    if (-not $npmSucceeded) {
-        throw 'npm failed to install @openai/codex.'
-    }
-    if (-not (Test-CodexInstall)) {
-        throw 'Codex CLI verification failed after npm installation.'
-    }
-
-    $manifest = Get-Content -LiteralPath (Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json') -Raw |
-        ConvertFrom-Json
-    Write-SetupLog "Installed/repaired official Codex CLI $($manifest.version)."
-}
-
 function Ensure-DeveloperCommandShims {
     $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
     New-Item -ItemType Directory -Path $shimRoot -Force | Out-Null
@@ -597,9 +503,7 @@ function Ensure-DeveloperCommandShims {
         'node.cmd' = Join-Path $nodeRoot 'node.exe'
         'npm.cmd' = Join-Path $nodeRoot 'npm.cmd'
         'npx.cmd' = Join-Path $nodeRoot 'npx.cmd'
-        'codex.cmd' = Join-Path $npmGlobalRoot 'codex.cmd'
         'git.cmd' = Join-Path $gitRoot 'cmd\git.exe'
-        'gh.cmd' = Join-Path $ghRoot 'bin\gh.exe'
         'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
         'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
     }
@@ -626,38 +530,39 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, gh, code, and wt command shims.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Git, code, and wt command shims.'
 }
 
-function Ensure-CodexShortcut {
-    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
-    if (-not (Test-Path -LiteralPath $codexCommand)) {
-        throw "Codex command is missing: $codexCommand"
+function Remove-ObsoleteAuthenticatedTools {
+    $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    foreach ($name in @('codex.cmd', 'gh.cmd')) {
+        $path = Join-Path $shimRoot $name
+        if (Test-Path -LiteralPath $path) {
+            $content = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
+            if ($content -match 'LimeNow managed developer command shim') {
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
     }
 
-    New-Item -ItemType Directory -Path $limeNowAppsRoot -Force | Out-Null
-    $launcherPath = Join-Path $limeNowAppsRoot 'Open-Codex.cmd'
-    $launcher = @"
-@echo off
-set "NODE_USE_SYSTEM_CA=1"
-set "NPM_CONFIG_PREFIX=$npmGlobalRoot"
-set "NPM_CONFIG_CACHE=$npmCacheRoot"
-set "PATH=$nodeRoot;$npmGlobalRoot;%PATH%"
-cd /d "%USERPROFILE%\Documents"
-call "$codexCommand" %*
-"@
-    Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding ASCII
+    foreach ($path in @(
+        (Join-Path $limeNowAppsRoot 'Open-Codex.cmd'),
+        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex CLI.lnk'),
+        (Join-Path $npmGlobalRoot 'codex'),
+        (Join-Path $npmGlobalRoot 'codex.cmd'),
+        (Join-Path $npmGlobalRoot 'codex.ps1'),
+        (Join-Path $npmGlobalRoot 'node_modules\@openai\codex')
+    )) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force
+        }
+    }
 
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $shortcutPath = Join-Path $desktop 'Codex CLI.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $launcherPath
-    $shortcut.WorkingDirectory = $documentsRoot
-    $shortcut.Description = 'OpenAI Codex CLI (persistent LimeNow installation)'
-    $shortcut.IconLocation = "$(Join-Path $nodeRoot 'node.exe'),0"
-    $shortcut.Save()
-    Write-SetupLog 'Verified persistent Codex CLI desktop shortcut.'
+    $oldGhRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
+    if (Test-Path -LiteralPath $oldGhRoot) {
+        Remove-Item -LiteralPath $oldGhRoot -Recurse -Force
+    }
+    Write-SetupLog 'Removed obsolete LimeNow Codex and GitHub CLI files without touching account data.'
 }
 
 function Ensure-DeveloperDesktopShortcuts {
@@ -917,15 +822,13 @@ try {
     Ensure-QwertzKeyboard
     Ensure-SetupCopies
     Ensure-StartupHook
+    Remove-ObsoleteAuthenticatedTools
     Repair-NodeAndNpm
     Repair-Git
-    Repair-GitHubCli
     Repair-VSCode
     Repair-WindowsTerminal
     Ensure-DeveloperEnvironment
-    Repair-CodexCli
     Ensure-DeveloperCommandShims
-    Ensure-CodexShortcut
     Ensure-DeveloperDesktopShortcuts
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher

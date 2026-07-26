@@ -25,21 +25,19 @@ authentication on GeForce NOW machines.
 ### Development tools
 
 - installs a persistent official Node.js LTS build with npm and npx;
-- installs the official OpenAI Codex CLI package through npm;
-- installs portable Git for Windows and the official GitHub CLI (`gh`);
+- installs portable Git for Windows;
 - installs official Visual Studio Code in portable mode, including the `code` CLI;
 - installs the official unpackaged Windows Terminal in portable mode, without
   administrator rights or the Microsoft Store;
-- adds `node`, `npm`, `npx`, `codex`, `git`, `gh`, `code`, and `wt` to `PATH`;
+- adds `node`, `npm`, `npx`, `git`, `code`, and `wt` to `PATH`;
 - configures Node.js to use the trusted Windows certificate store on GeForce NOW;
-- creates desktop launchers for Codex, Visual Studio Code, and Windows Terminal;
+- creates desktop launchers for Visual Studio Code and Windows Terminal;
 - opens Command Prompt inside Windows Terminal from its desktop launcher;
 - keeps editor extensions, settings, terminal state, npm packages, and tools in
   SalsaNOW's persistent `I:\Apps` storage.
 
-Codex asks you to sign in when you first run it. LimeNow does not handle or
-store Codex credentials. GitHub CLI similarly asks you to authenticate when you
-first use an account command; LimeNow does not handle or store that login.
+Codex and GitHub CLI deliberately remain on your local computer. LimeNow does
+not install them in GeForce NOW or store their credentials.
 
 ### Minecraft
 
@@ -72,8 +70,10 @@ make NVIDIA's short-lived HTTPS proxy certificates appear expired.
 
 - [Read `install.ps1`](install.ps1)
 - [Read the full extension setup](setup.ps1)
+- [Read the remote-access validation status](docs/remote-access-validation.md)
 
-LimeNow never asks for, reads, or transmits account passwords or tokens.
+LimeNow never asks for, reads, or transmits account passwords, Codex
+credentials, GitHub tokens, private SSH keys, or API keys.
 Modrinth itself stores its Microsoft session in its application database.
 LimeNow places that unmodified database in SalsaNOW's persistent storage so the
 session can survive a new machine; anyone with access to that storage should
@@ -100,9 +100,8 @@ compatibility build, not an official Modrinth release.
 
 - Extension setup: `I:\Apps\SalsaNOW\EasySetup`
 - Node.js: `I:\Apps\LimeNow\NodeJS`
-- npm global packages and Codex: `I:\Apps\LimeNow\NpmGlobal`
+- npm global packages: `I:\Apps\LimeNow\NpmGlobal`
 - Git for Windows: `I:\Apps\LimeNow\Git`
-- GitHub CLI: `I:\Apps\LimeNow\GitHubCLI`
 - Visual Studio Code and portable data: `I:\Apps\LimeNow\VSCode`
 - Windows Terminal and portable settings: `I:\Apps\LimeNow\WindowsTerminal`
 - Modrinth App: `I:\Apps\ModrinthApp`
