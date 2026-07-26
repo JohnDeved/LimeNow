@@ -1,0 +1,153 @@
+name: Build LimeSSH
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-limessh.yml
+      - patches/0001-Add-LimeSSH-machine-mode.patch
+      - codex-state.ps1
+      - remote-access.ps1
+      - setup.ps1
+      - tools/Build-LimeSshPrototype.ps1
+      - tools/Test-LimeSshPrototype.ps1
+      - tools/Test-CodexPersistence.ps1
+      - tools/Test-RemoteAccessManager.ps1
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-limessh.yml
+      - patches/0001-Add-LimeSSH-machine-mode.patch
+      - codex-state.ps1
+      - remote-access.ps1
+      - setup.ps1
+      - tools/Build-LimeSshPrototype.ps1
+      - tools/Test-LimeSshPrototype.ps1
+      - tools/Test-CodexPersistence.ps1
+      - tools/Test-RemoteAccessManager.ps1
+
+permissions:
+  contents: write
+
+env:
+  UPTERM_COMMIT: 1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9
+  GO_VERSION: 1.26.5
+  RELEASE_TAG: limessh-v0.1.0
+  LIMESSH_SHA256: 8b203f33c8d87756a054e1d7382456c926f13ec2ccbf5341bd41226cfdd109ec
+  UPTERMD_SHA256: 81fa5be509f3b77a7356dcd293ec4720207e4e22b0e289c68559b42e158f8d6a
+  LICENSE_SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
+
+jobs:
+  build:
+    name: Build pinned Windows binaries
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out LimeNow
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Build from pinned Upterm source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $result = & .\tools\Build-LimeSshPrototype.ps1 `
+            -OutputPath .\dist\LimeSSH.exe `
+            -RelayOutputPath .\dist\uptermd.exe
+          if ($result.Sha256 -ne $env:LIMESSH_SHA256) {
+            throw "LimeSSH reproducibility mismatch. Expected $env:LIMESSH_SHA256 but received $($result.Sha256)."
+          }
+          if ($result.RelaySha256 -ne $env:UPTERMD_SHA256) {
+            throw "uptermd reproducibility mismatch. Expected $env:UPTERMD_SHA256 but received $($result.RelaySha256)."
+          }
+
+      - name: Validate machine mode and LimeNow manager
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          foreach ($script in @(
+            '.\codex-state.ps1',
+            '.\remote-access.ps1',
+            '.\setup.ps1',
+            '.\tools\Test-CodexPersistence.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile(
+              $script,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count) {
+              throw "$script failed syntax validation: $($parseErrors -join '; ')"
+            }
+          }
+          & .\tools\Test-CodexPersistence.ps1
+          & .\tools\Test-LimeSshPrototype.ps1 `
+            -LimeSshPath .\dist\LimeSSH.exe `
+            -RelayPath .\dist\uptermd.exe
+          & .\tools\Test-RemoteAccessManager.ps1 `
+            -LimeSshPath .\dist\LimeSSH.exe `
+            -RelayPath .\dist\uptermd.exe
+
+      - name: Package license and provenance
+        shell: pwsh
+        run: |
+          $licenseUrl = "https://raw.githubusercontent.com/owenthereal/upterm/$env:UPTERM_COMMIT/LICENSE"
+          $licensePath = ".\dist\UPTERM-APACHE-2.0-LICENSE"
+          Invoke-WebRequest -Uri $licenseUrl -OutFile $licensePath -UseBasicParsing -TimeoutSec 60
+          $licenseHash = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($licenseHash -ne $env:LICENSE_SHA256) {
+            throw "Upterm license checksum mismatch. Expected $env:LICENSE_SHA256 but received $licenseHash."
+          }
+
+          @"
+          LimeSSH 0.1.0
+
+          Upstream: https://github.com/owenthereal/upterm
+          Upstream commit: $env:UPTERM_COMMIT
+          Go toolchain: $env:GO_VERSION
+          LimeNow patch: patches/0001-Add-LimeSSH-machine-mode.patch
+          License: Apache-2.0 (UPTERM-APACHE-2.0-LICENSE)
+
+          LimeSSH SHA-256: $env:LIMESSH_SHA256
+          uptermd SHA-256: $env:UPTERMD_SHA256
+          "@ | Set-Content -LiteralPath ".\dist\LIMESSH-BUILD.txt" -Encoding utf8
+
+          @"
+          $env:LIMESSH_SHA256  LimeSSH.exe
+          $env:UPTERMD_SHA256  uptermd.exe
+          $env:LICENSE_SHA256  UPTERM-APACHE-2.0-LICENSE
+          "@ | Set-Content -LiteralPath ".\dist\SHA256SUMS" -Encoding ascii
+
+      - name: Publish pinned LimeSSH release
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          LimeSSH 0.1.0 is the pinned Windows machine-mode prototype for LimeNow.
+
+          It is built from Upterm commit $env:UPTERM_COMMIT with the reviewed
+          LimeNow patch in this repository, using Go $env:GO_VERSION. The
+          Apache-2.0 license, provenance, and checksums are published alongside
+          both Windows binaries.
+
+          This preview uses the public Upterm community relay as an external
+          best-effort MVP dependency. A LimeNow-operated relay is a future
+          feature, not an MVP requirement.
+          "@
+
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $env:GITHUB_SHA `
+              --title "LimeSSH 0.1.0 preview" `
+              --notes $notes `
+              --prerelease
+          }
+          gh release upload $env:RELEASE_TAG .\dist\* `
+            --repo $env:GITHUB_REPOSITORY `
+            --clobber

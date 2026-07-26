@@ -11,16 +11,18 @@ $limeNowAppsRoot = 'I:\Apps\LimeNow'
 $nodeRoot = Join-Path $limeNowAppsRoot 'NodeJS'
 $npmGlobalRoot = Join-Path $limeNowAppsRoot 'NpmGlobal'
 $npmCacheRoot = Join-Path $limeNowAppsRoot 'NpmCache'
+$codexRoot = Join-Path $limeNowAppsRoot 'Codex'
+$codexBinRoot = Join-Path $codexRoot 'bin'
+$codexStateManager = Join-Path $codexRoot 'codex-state.ps1'
+$codexStateManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/codex-state.ps1'
+$codexWrapper = Join-Path $codexBinRoot 'codex.cmd'
+$codexVersion = '0.145.0'
 $nodeVersion = 'v24.18.0'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
 $gitRoot = Join-Path $limeNowAppsRoot 'Git'
 $gitVersion = '2.55.0.windows.3'
 $gitArchiveUrl = 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/PortableGit-2.55.0.3-64-bit.7z.exe'
 $gitArchiveHash = 'ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d'
-$ghRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
-$ghVersion = '2.96.0'
-$ghArchiveUrl = 'https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip'
-$ghArchiveHash = 'c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3'
 $vscodeRoot = Join-Path $limeNowAppsRoot 'VSCode'
 $vscodeVersion = '1.130.0'
 $vscodeArchiveUrl = 'https://vscode.download.prss.microsoft.com/dbazure/download/stable/1b6a188127eeaf9194f945eb6eb89a657e93c54c/VSCode-win32-x64-1.130.0.zip'
@@ -29,6 +31,15 @@ $terminalRoot = Join-Path $limeNowAppsRoot 'WindowsTerminal'
 $terminalVersion = '1.24.11911.0'
 $terminalArchiveUrl = 'https://github.com/microsoft/terminal/releases/download/v1.24.11911.0/Microsoft.WindowsTerminal_1.24.11911.0_x64.zip'
 $terminalArchiveHash = '7691efeb71c8dd0b95536c84e366fa4cf809a42c534912f9cefa1056534383bd'
+$limeSshRoot = Join-Path $limeNowAppsRoot 'LimeSSH'
+$limeSshVersion = '0.1.0'
+$limeSshExecutable = Join-Path $limeSshRoot 'LimeSSH.exe'
+$limeSshAssetUrl = 'https://github.com/JohnDeved/LimeNow/releases/download/limessh-v0.1.0/LimeSSH.exe'
+$limeSshAssetHash = '8b203f33c8d87756a054e1d7382456c926f13ec2ccbf5341bd41226cfdd109ec'
+$limeSshLicenseUrl = 'https://github.com/JohnDeved/LimeNow/releases/download/limessh-v0.1.0/UPTERM-APACHE-2.0-LICENSE'
+$limeSshLicenseHash = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
+$limeSshManager = Join-Path $limeSshRoot 'remote-access.ps1'
+$limeSshManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/remote-access.ps1'
 $modrinthRoot = 'I:\Apps\ModrinthApp'
 $modrinthDataRoot = 'I:\Apps\ModrinthData'
 $modrinthAppData = Join-Path $env:APPDATA 'ModrinthApp'
@@ -360,50 +371,6 @@ function Repair-Git {
     }
 }
 
-function Test-GitHubCliInstall {
-    $ghExecutable = Join-Path $ghRoot 'bin\gh.exe'
-    if (-not (Test-Path -LiteralPath $ghExecutable)) {
-        return $false
-    }
-    try {
-        $output = (& $ghExecutable --version 2>$null | Select-Object -First 1)
-        return $output -match "^gh version $([regex]::Escape($ghVersion))\b"
-    }
-    catch {
-        return $false
-    }
-}
-
-function Repair-GitHubCli {
-    if (Test-GitHubCliInstall) {
-        Write-SetupLog "Verified portable GitHub CLI $ghVersion."
-        return
-    }
-
-    Write-SetupLog "GitHub CLI is missing or incomplete; installing official gh $ghVersion."
-    $repairRoot = Join-Path $setupRoot ('gh-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'gh.zip'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-    try {
-        Get-VerifiedDownload -Uri $ghArchiveUrl -Destination $archivePath -ExpectedHash $ghArchiveHash
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe'))) {
-            throw 'The verified GitHub CLI archive has an unexpected layout.'
-        }
-        New-Item -ItemType Directory -Path $ghRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $extractPath -Force |
-            Copy-Item -Destination $ghRoot -Recurse -Force
-        if (-not (Test-GitHubCliInstall)) {
-            throw 'GitHub CLI verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable GitHub CLI $ghVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
-}
-
 function Test-VSCodeInstall {
     $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
     $codeCommand = Join-Path $vscodeRoot 'bin\code.cmd'
@@ -506,15 +473,16 @@ function Ensure-DeveloperEnvironment {
     New-Item -ItemType Directory -Path $npmGlobalRoot, $npmCacheRoot -Force | Out-Null
     $requiredPathEntries = @(
         $nodeRoot,
+        $codexBinRoot,
         $npmGlobalRoot,
         (Join-Path $gitRoot 'cmd'),
-        (Join-Path $ghRoot 'bin'),
         (Join-Path $vscodeRoot 'bin'),
         $terminalRoot
     )
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $userParts = @($userPath -split ';' | Where-Object { $_ })
+    $obsoleteGhPath = Join-Path $limeNowAppsRoot 'GitHubCLI\bin'
+    $userParts = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
     $newUserParts = @($requiredPathEntries)
     foreach ($part in $userParts) {
         if (-not ($newUserParts | Where-Object { $_ -eq $part })) {
@@ -526,7 +494,7 @@ function Ensure-DeveloperEnvironment {
         [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
     }
 
-    $processParts = @($env:Path -split ';' | Where-Object { $_ })
+    $processParts = @($env:Path -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
     $newProcessParts = @($requiredPathEntries)
     foreach ($part in $processParts) {
         if (-not ($newProcessParts | Where-Object { $_ -eq $part })) {
@@ -554,7 +522,9 @@ function Test-CodexInstall {
 
     try {
         $versionOutput = (& $codexCommand --version 2>$null | Select-Object -First 1)
-        return $versionOutput -match '^codex-cli\s+\S+'
+        $manifest = Get-Content -LiteralPath $packageManifest -Raw | ConvertFrom-Json
+        return $manifest.version -eq $codexVersion -and
+            $versionOutput -eq "codex-cli $codexVersion"
     }
     catch {
         return $false
@@ -563,15 +533,16 @@ function Test-CodexInstall {
 
 function Repair-CodexCli {
     if (Test-CodexInstall) {
-        $manifest = Get-Content -LiteralPath (Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json') -Raw |
-            ConvertFrom-Json
+        $manifest = Get-Content -LiteralPath (
+            Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
+        ) -Raw | ConvertFrom-Json
         Write-SetupLog "Verified official Codex CLI $($manifest.version)."
         return
     }
 
     $npmCommand = Join-Path $nodeRoot 'npm.cmd'
     Write-SetupLog 'Codex CLI is missing or incomplete; installing official @openai/codex.'
-    & $npmCommand install --global '@openai/codex@latest' `
+    & $npmCommand install --global "@openai/codex@$codexVersion" `
         --prefix $npmGlobalRoot `
         --cache $npmCacheRoot `
         --no-audit `
@@ -585,9 +556,89 @@ function Repair-CodexCli {
         throw 'Codex CLI verification failed after npm installation.'
     }
 
-    $manifest = Get-Content -LiteralPath (Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json') -Raw |
-        ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath (
+        Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
+    ) -Raw | ConvertFrom-Json
     Write-SetupLog "Installed/repaired official Codex CLI $($manifest.version)."
+}
+
+function Ensure-CodexStateManager {
+    $localManager = Join-Path (Split-Path -Parent $PSCommandPath) 'codex-state.ps1'
+    $repairRoot = Join-Path $setupRoot ('codex-state-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $candidate = Join-Path $repairRoot 'codex-state.ps1'
+        if (Test-Path -LiteralPath $localManager) {
+            Copy-Item -LiteralPath $localManager -Destination $candidate
+        }
+        else {
+            Invoke-WebRequest `
+                -Uri $codexStateManagerUrl `
+                -OutFile $candidate `
+                -UseBasicParsing `
+                -TimeoutSec 60
+        }
+
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$parseErrors
+        ) | Out-Null
+        if ($parseErrors.Count) {
+            throw 'The Codex state manager failed PowerShell syntax validation.'
+        }
+        Copy-IfChanged -Source $candidate -Destination $codexStateManager
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-CodexLauncher {
+    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
+    if (-not (Test-Path -LiteralPath $codexCommand)) {
+        throw "Codex command is missing: $codexCommand"
+    }
+
+    Ensure-CodexStateManager
+    & $codexStateManager `
+        -Action Initialize `
+        -PersistentRoot $codexRoot `
+        -SessionCodexHome (Join-Path $env:USERPROFILE '.codex') |
+        ForEach-Object { Write-SetupLog $_ }
+
+    New-Item -ItemType Directory -Path $codexBinRoot -Force | Out-Null
+    $wrapper = @"
+@echo off
+REM LimeNow managed Codex persistence wrapper
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$codexStateManager" -Action Run -PersistentRoot "$codexRoot" -CodexCommand "$codexCommand" %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $codexWrapper -Value $wrapper -Encoding ASCII
+
+    $launcherPath = Join-Path $limeNowAppsRoot 'Open-Codex.cmd'
+    $launcher = @"
+@echo off
+set "NODE_USE_SYSTEM_CA=1"
+set "NPM_CONFIG_PREFIX=$npmGlobalRoot"
+set "NPM_CONFIG_CACHE=$npmCacheRoot"
+set "PATH=$nodeRoot;$codexBinRoot;$npmGlobalRoot;%PATH%"
+cd /d "%USERPROFILE%\Documents"
+call "$codexWrapper" %*
+"@
+    Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding ASCII
+
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $shortcutPath = Join-Path $desktop 'Codex CLI.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $launcherPath
+    $shortcut.WorkingDirectory = $documentsRoot
+    $shortcut.Description = 'OpenAI Codex CLI with persistent LimeNow auth and sessions'
+    $shortcut.IconLocation = "$(Join-Path $nodeRoot 'node.exe'),0"
+    $shortcut.Save()
+    Write-SetupLog 'Verified the Codex launcher, minimal persistent state, and desktop shortcut.'
 }
 
 function Ensure-DeveloperCommandShims {
@@ -597,9 +648,8 @@ function Ensure-DeveloperCommandShims {
         'node.cmd' = Join-Path $nodeRoot 'node.exe'
         'npm.cmd' = Join-Path $nodeRoot 'npm.cmd'
         'npx.cmd' = Join-Path $nodeRoot 'npx.cmd'
-        'codex.cmd' = Join-Path $npmGlobalRoot 'codex.cmd'
+        'codex.cmd' = $codexWrapper
         'git.cmd' = Join-Path $gitRoot 'cmd\git.exe'
-        'gh.cmd' = Join-Path $ghRoot 'bin\gh.exe'
         'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
         'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
     }
@@ -626,38 +676,24 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, gh, code, and wt command shims.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, code, and wt command shims.'
 }
 
-function Ensure-CodexShortcut {
-    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
-    if (-not (Test-Path -LiteralPath $codexCommand)) {
-        throw "Codex command is missing: $codexCommand"
+function Remove-ObsoleteGitHubCli {
+    $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    $ghShim = Join-Path $shimRoot 'gh.cmd'
+    if (Test-Path -LiteralPath $ghShim) {
+        $content = Get-Content -LiteralPath $ghShim -Raw -ErrorAction SilentlyContinue
+        if ($content -match 'LimeNow managed developer command shim') {
+            Remove-Item -LiteralPath $ghShim -Force
+        }
     }
 
-    New-Item -ItemType Directory -Path $limeNowAppsRoot -Force | Out-Null
-    $launcherPath = Join-Path $limeNowAppsRoot 'Open-Codex.cmd'
-    $launcher = @"
-@echo off
-set "NODE_USE_SYSTEM_CA=1"
-set "NPM_CONFIG_PREFIX=$npmGlobalRoot"
-set "NPM_CONFIG_CACHE=$npmCacheRoot"
-set "PATH=$nodeRoot;$npmGlobalRoot;%PATH%"
-cd /d "%USERPROFILE%\Documents"
-call "$codexCommand" %*
-"@
-    Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding ASCII
-
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $shortcutPath = Join-Path $desktop 'Codex CLI.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $launcherPath
-    $shortcut.WorkingDirectory = $documentsRoot
-    $shortcut.Description = 'OpenAI Codex CLI (persistent LimeNow installation)'
-    $shortcut.IconLocation = "$(Join-Path $nodeRoot 'node.exe'),0"
-    $shortcut.Save()
-    Write-SetupLog 'Verified persistent Codex CLI desktop shortcut.'
+    $oldGhRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
+    if (Test-Path -LiteralPath $oldGhRoot) {
+        Remove-Item -LiteralPath $oldGhRoot -Recurse -Force
+    }
+    Write-SetupLog 'Removed obsolete LimeNow GitHub CLI files without touching account data.'
 }
 
 function Ensure-DeveloperDesktopShortcuts {
@@ -688,6 +724,160 @@ function Ensure-DeveloperDesktopShortcuts {
     $terminalShortcut.Save()
 
     Write-SetupLog 'Verified persistent Visual Studio Code and Windows Terminal desktop shortcuts.'
+}
+
+function Test-LimeSshInstall {
+    $licensePath = Join-Path $limeSshRoot 'UPTERM-APACHE-2.0-LICENSE'
+    $buildInfoPath = Join-Path $limeSshRoot 'LIMESSH-BUILD.txt'
+    if (-not (Test-Path -LiteralPath $limeSshExecutable) -or
+        -not (Test-Path -LiteralPath $licensePath) -or
+        -not (Test-Path -LiteralPath $buildInfoPath)) {
+        return $false
+    }
+    $binaryHash = (Get-FileHash -LiteralPath $limeSshExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $licenseHash = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw
+    return $binaryHash -eq $limeSshAssetHash -and
+        $licenseHash -eq $limeSshLicenseHash -and
+        $buildInfo -match "LimeSSH $([regex]::Escape($limeSshVersion))"
+}
+
+function Repair-LimeSsh {
+    if (Test-LimeSshInstall) {
+        Write-SetupLog "Verified pinned LimeSSH $limeSshVersion preview."
+        return
+    }
+
+    if (Test-Path -LiteralPath $limeSshManager) {
+        try {
+            & $limeSshManager -Action Stop -InstallRoot $limeSshRoot
+        }
+        catch {
+            Write-SetupLog "WARNING: Unable to stop the old LimeSSH process before repair: $($_.Exception.Message)"
+        }
+    }
+
+    Write-SetupLog "LimeSSH is missing or incomplete; installing pinned preview $limeSshVersion."
+    $repairRoot = Join-Path $setupRoot ('limessh-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $downloadedBinary = Join-Path $repairRoot 'LimeSSH.exe'
+        $downloadedLicense = Join-Path $repairRoot 'UPTERM-APACHE-2.0-LICENSE'
+        Get-VerifiedDownload `
+            -Uri $limeSshAssetUrl `
+            -Destination $downloadedBinary `
+            -ExpectedHash $limeSshAssetHash
+        Get-VerifiedDownload `
+            -Uri $limeSshLicenseUrl `
+            -Destination $downloadedLicense `
+            -ExpectedHash $limeSshLicenseHash
+
+        New-Item -ItemType Directory -Path $limeSshRoot -Force | Out-Null
+        Copy-Item -LiteralPath $downloadedBinary -Destination $limeSshExecutable -Force
+        Copy-Item `
+            -LiteralPath $downloadedLicense `
+            -Destination (Join-Path $limeSshRoot 'UPTERM-APACHE-2.0-LICENSE') `
+            -Force
+        @"
+LimeSSH $limeSshVersion
+
+Upstream: https://github.com/owenthereal/upterm
+Upstream commit: 1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9
+Go toolchain: 1.26.5
+LimeSSH SHA-256: $limeSshAssetHash
+License: Apache-2.0 (UPTERM-APACHE-2.0-LICENSE)
+"@ | Set-Content -LiteralPath (Join-Path $limeSshRoot 'LIMESSH-BUILD.txt') -Encoding utf8
+
+        if (-not (Test-LimeSshInstall)) {
+            throw 'LimeSSH verification failed after installation.'
+        }
+        Write-SetupLog "Installed pinned LimeSSH $limeSshVersion preview."
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-LimeSshManager {
+    $localManager = Join-Path (Split-Path -Parent $PSCommandPath) 'remote-access.ps1'
+    $repairRoot = Join-Path $setupRoot ('limessh-manager-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $candidate = Join-Path $repairRoot 'remote-access.ps1'
+        if (Test-Path -LiteralPath $localManager) {
+            Copy-Item -LiteralPath $localManager -Destination $candidate
+        }
+        else {
+            Invoke-WebRequest `
+                -Uri $limeSshManagerUrl `
+                -OutFile $candidate `
+                -UseBasicParsing `
+                -TimeoutSec 60
+        }
+
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$parseErrors
+        ) | Out-Null
+        if ($parseErrors.Count) {
+            throw 'The LimeSSH remote-access manager failed PowerShell syntax validation.'
+        }
+        Copy-IfChanged -Source $candidate -Destination $limeSshManager
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-LimeSshShortcut {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $shell = New-Object -ComObject WScript.Shell
+    $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Source -First 1
+    if (-not $powerShell) {
+        $powerShell = Join-Path $PSHOME 'powershell.exe'
+    }
+    $shortcut = $shell.CreateShortcut((Join-Path $desktop 'LimeSSH Remote Access.lnk'))
+    $shortcut.TargetPath = $powerShell
+    $shortcut.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$limeSshManager`" -Action Manage"
+    $shortcut.WorkingDirectory = $documentsRoot
+    $shortcut.Description = 'Manage public-key-only LimeSSH remote access'
+    $shortcut.Save()
+    Write-SetupLog 'Verified the LimeSSH remote-access desktop shortcut.'
+}
+
+function Ensure-LimeSshRemoteAccess {
+    try {
+        Repair-LimeSsh
+        Ensure-LimeSshManager
+        Ensure-LimeSshShortcut
+
+        $configPath = Join-Path $limeSshRoot 'config.json'
+        if ($Startup) {
+            if (Test-Path -LiteralPath $configPath) {
+                & $limeSshManager -Action Start -Startup -InstallRoot $limeSshRoot
+            }
+            return
+        }
+
+        if (-not (Test-Path -LiteralPath $configPath)) {
+            Write-Host ''
+            Write-Host 'Remote development (preview)' -ForegroundColor Cyan
+            Write-Host 'LimeSSH can expose this GFN session through public-key-only SSH.'
+            $enable = Read-Host 'Enable remote access now? [y/N]'
+            if ($enable -match '^(?i:y|yes)$') {
+                & $limeSshManager -Action Configure -InstallRoot $limeSshRoot
+            }
+        }
+        else {
+            & $limeSshManager -Action Start -InstallRoot $limeSshRoot
+        }
+    }
+    catch {
+        Write-SetupLog "WARNING: LimeSSH preview setup failed without blocking LimeNow: $($_.Exception.Message)"
+    }
 }
 
 function Get-LimeNowModrinthAsset {
@@ -917,16 +1107,17 @@ try {
     Ensure-QwertzKeyboard
     Ensure-SetupCopies
     Ensure-StartupHook
+    Remove-ObsoleteGitHubCli
     Repair-NodeAndNpm
     Repair-Git
-    Repair-GitHubCli
     Repair-VSCode
     Repair-WindowsTerminal
     Ensure-DeveloperEnvironment
     Repair-CodexCli
+    Ensure-CodexLauncher
     Ensure-DeveloperCommandShims
-    Ensure-CodexShortcut
     Ensure-DeveloperDesktopShortcuts
+    Ensure-LimeSshRemoteAccess
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher
     Ensure-ModrinthShortcut

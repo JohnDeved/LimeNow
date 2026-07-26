@@ -25,21 +25,62 @@ authentication on GeForce NOW machines.
 ### Development tools
 
 - installs a persistent official Node.js LTS build with npm and npx;
-- installs the official OpenAI Codex CLI package through npm;
-- installs portable Git for Windows and the official GitHub CLI (`gh`);
+- installs and repairs the official OpenAI Codex CLI;
+- installs portable Git for Windows;
 - installs official Visual Studio Code in portable mode, including the `code` CLI;
 - installs the official unpackaged Windows Terminal in portable mode, without
   administrator rights or the Microsoft Store;
-- adds `node`, `npm`, `npx`, `codex`, `git`, `gh`, `code`, and `wt` to `PATH`;
+- adds `node`, `npm`, `npx`, `codex`, `git`, `code`, and `wt` to `PATH`;
 - configures Node.js to use the trusted Windows certificate store on GeForce NOW;
 - creates desktop launchers for Codex, Visual Studio Code, and Windows Terminal;
 - opens Command Prompt inside Windows Terminal from its desktop launcher;
 - keeps editor extensions, settings, terminal state, npm packages, and tools in
-  SalsaNOW's persistent `I:\Apps` storage.
+  SalsaNOW's persistent `I:\Apps` storage;
+- keeps only Codex authentication, resumable sessions, and user configuration
+  under `I:\Apps\LimeNow\Codex`.
 
-Codex asks you to sign in when you first run it. LimeNow does not handle or
-store Codex credentials. GitHub CLI similarly asks you to authenticate when you
-first use an account command; LimeNow does not handle or store that login.
+GitHub CLI deliberately remains on your local computer; Git itself stays
+available inside GeForce NOW.
+
+> [!WARNING]
+> Codex file-based authentication contains reusable access tokens. LimeNow
+> stores that file in SalsaNOW's persistent `I:\Apps` storage so sign-in can
+> survive a replacement GFN machine. Anyone or anything with access to that
+> storage may be able to access the same credentials and session transcripts.
+> LimeNow applies a current-user-and-SYSTEM ACL where the storage supports
+> Windows permissions, but SalsaNOW's storage security remains the outer trust
+> boundary. See [Codex persistence and security](docs/codex-persistence.md).
+
+### Remote development preview
+
+LimeNow includes an opt-in LimeSSH preview for normal OpenSSH clients. It runs
+as the current GFN user, creates an outbound reverse tunnel, and authorizes only
+the public keys published by a configured GitHub username or a public key pasted
+from the user's personal computer. No private SSH key, OAuth token, Windows
+service, administrator right, or inbound port is required.
+
+On first setup, LimeNow offers to configure remote access. It can also be
+configured later from the **LimeSSH Remote Access** desktop shortcut. Every
+session receives a new relay address. LimeNow copies a host-key-safe `ssh`
+command to the clipboard and writes SSH, SCP, SFTP, and optional config examples
+to **LimeSSH Connection.txt** on the desktop.
+
+The desktop manager shows the active connection and offers Copy, Refresh Keys,
+Retry, Configure, and Stop actions. Refreshing keys or retrying intentionally
+creates a new session address.
+
+The connection file also includes a one-time personal-PC SSH configuration that
+keeps a separate known-hosts entry for every session. After adding it, future
+sessions use the shorter standard form:
+
+```shell
+ssh SESSION_ID@uptermd.upterm.dev
+```
+
+This is a preview, not a production support claim. It currently defaults to the
+public Upterm community relay, which is the MVP endpoint and an external
+best-effort dependency. A LimeNow-operated relay is a future feature, not an
+MVP requirement. VS Code Remote SSH is not documented as supported.
 
 ### Minecraft
 
@@ -72,8 +113,15 @@ make NVIDIA's short-lived HTTPS proxy certificates appear expired.
 
 - [Read `install.ps1`](install.ps1)
 - [Read the full extension setup](setup.ps1)
+- [Read the Codex persistence and security model](docs/codex-persistence.md)
+- [Read the remote-access validation status](docs/remote-access-validation.md)
+- [Read the LimeSSH machine-mode prototype contract](docs/lime-ssh-machine-mode.md)
+- [Inspect the pinned LimeSSH prototype patch](patches/0001-Add-LimeSSH-machine-mode.patch)
 
-LimeNow never asks for, reads, or transmits account passwords or tokens.
+LimeNow never prints or transmits account passwords, Codex credentials, GitHub
+tokens, private SSH keys, or API keys. Its Codex state manager copies the
+existing `auth.json` credential file between the temporary profile and
+SalsaNOW's persistent storage without parsing or logging its contents.
 Modrinth itself stores its Microsoft session in its application database.
 LimeNow places that unmodified database in SalsaNOW's persistent storage so the
 session can survive a new machine; anyone with access to that storage should
@@ -100,15 +148,22 @@ compatibility build, not an official Modrinth release.
 
 - Extension setup: `I:\Apps\SalsaNOW\EasySetup`
 - Node.js: `I:\Apps\LimeNow\NodeJS`
-- npm global packages and Codex: `I:\Apps\LimeNow\NpmGlobal`
+- npm global packages: `I:\Apps\LimeNow\NpmGlobal`
+- Codex launcher and minimal state: `I:\Apps\LimeNow\Codex`
+  - authentication: `auth\auth.json`
+  - active and archived rollouts: `sessions\active`, `sessions\archived`
+  - user configuration: `config\config.toml` and `config\*.config.toml`
 - Git for Windows: `I:\Apps\LimeNow\Git`
-- GitHub CLI: `I:\Apps\LimeNow\GitHubCLI`
 - Visual Studio Code and portable data: `I:\Apps\LimeNow\VSCode`
 - Windows Terminal and portable settings: `I:\Apps\LimeNow\WindowsTerminal`
+- LimeSSH binary, public enrollment configuration, relay host key, license, and
+  provenance: `I:\Apps\LimeNow\LimeSSH`
 - Modrinth App: `I:\Apps\ModrinthApp`
 - Modrinth data: `I:\Apps\ModrinthData`
 - SalsaNOW extension hook: `I:\Apps\SalsaNOW\StartupBatch.bat`
 - Repair log: `I:\Apps\SalsaNOW\EasySetup\setup.log`
+- Current LimeSSH session state and authorized public keys:
+  `%LOCALAPPDATA%\LimeNow\RemoteAccess`
 
 ## Relationship to SalsaNOW
 
