@@ -79,6 +79,21 @@ function Get-VerifiedDownload {
     }
 }
 
+function Remove-SetupRepairDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $resolvedSetupRoot = [IO.Path]::GetFullPath($setupRoot).TrimEnd('\') + '\'
+    $leaf = Split-Path -Leaf $resolvedPath
+    if (-not $resolvedPath.StartsWith($resolvedSetupRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $leaf -notmatch '-repair-[a-f0-9]{32}$') {
+        throw "Refusing to remove an unexpected repair directory: $resolvedPath"
+    }
+    if (Test-Path -LiteralPath $resolvedPath) {
+        Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+    }
+}
+
 function Copy-IfChanged {
     param(
         [Parameter(Mandatory)][string]$Source,
@@ -341,9 +356,7 @@ function Repair-Git {
         Write-SetupLog "Installed/repaired official portable Git $gitVersion."
     }
     finally {
-        if (Test-Path -LiteralPath $repairRoot) {
-            Remove-Item -LiteralPath $repairRoot -Recurse -Force
-        }
+        Remove-SetupRepairDirectory -Path $repairRoot
     }
 }
 
@@ -387,9 +400,7 @@ function Repair-GitHubCli {
         Write-SetupLog "Installed/repaired official portable GitHub CLI $ghVersion."
     }
     finally {
-        if (Test-Path -LiteralPath $repairRoot) {
-            Remove-Item -LiteralPath $repairRoot -Recurse -Force
-        }
+        Remove-SetupRepairDirectory -Path $repairRoot
     }
 }
 
@@ -437,9 +448,7 @@ function Repair-VSCode {
         Write-SetupLog "Installed/repaired official portable Visual Studio Code $vscodeVersion."
     }
     finally {
-        if (Test-Path -LiteralPath $repairRoot) {
-            Remove-Item -LiteralPath $repairRoot -Recurse -Force
-        }
+        Remove-SetupRepairDirectory -Path $repairRoot
     }
 }
 
@@ -489,9 +498,7 @@ function Repair-WindowsTerminal {
         Write-SetupLog "Installed/repaired official portable Windows Terminal $terminalVersion."
     }
     finally {
-        if (Test-Path -LiteralPath $repairRoot) {
-            Remove-Item -LiteralPath $repairRoot -Recurse -Force
-        }
+        Remove-SetupRepairDirectory -Path $repairRoot
     }
 }
 
