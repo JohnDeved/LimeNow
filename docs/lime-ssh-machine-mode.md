@@ -86,11 +86,13 @@ Windows integration tests must cover ConPTY resize, concurrent channels, SFTP,
 `scp`, loopback forwarding, and job-object cleanup.
 
 Relay and product claims require separate end-to-end evidence on a
-NAT-restricted Windows host, then on GFN. The public-relay probe has now passed
-from an actual GFN VM, proving that outbound reverse-tunnel transport works
-without an inbound port. The public community relay is the MVP endpoint and an
-external best-effort dependency. A LimeNow-operated relay is a future feature,
-not an MVP gate.
+NAT-restricted Windows host, then on GFN. The full relay matrix now passes from
+an actual GFN VM through `uptermd.upterm.dev`, proving interactive shell, exec,
+concurrency, SFTP/SCP, forwarding policy, and process cleanup without an inbound
+port. An abruptly killed client took 58.3 seconds to propagate through the
+community relay's keepalive path before LimeSSH cleaned up its command. The
+public community relay is the MVP endpoint and an external best-effort
+dependency. A LimeNow-operated relay is a future feature, not an MVP gate.
 
 ## LimeNow preview integration
 
@@ -102,6 +104,9 @@ not an MVP gate.
 - start at most one LimeSSH process during SalsaNOW startup;
 - publish SSH, SCP, SFTP, and config examples with a session-specific
   `HostKeyAlias` and `StrictHostKeyChecking accept-new`;
+- publish a one-time client rule using OpenSSH's `%C` connection hash so later
+  sessions can use the short `ssh SESSION_ID@uptermd.upterm.dev` form without
+  sharing known-hosts entries between ephemeral host keys;
 - stop the managed process and revoke the relay session.
 
 `setup.ps1` installs only the checksum-pinned prerelease binary and matching

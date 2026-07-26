@@ -116,12 +116,26 @@ try {
         $status.SshCommand -notmatch '-o StrictHostKeyChecking=accept-new') {
         throw "The published SSH command lacks session-specific host-key protection: $($status.SshCommand)"
     }
+    $shortPortOption = if ($status.Port -ne 22) { " -p $($status.Port)" } else { '' }
+    $expectedShortCommand = "ssh$shortPortOption $($status.SessionId)@$($status.Host)"
+    if ($status.ShortSshCommand -ne $expectedShortCommand -or
+        $status.OneTimeClientConfig -notmatch 'StrictHostKeyChecking accept-new' -or
+        $status.OneTimeClientConfig -notmatch [regex]::Escape(
+            'UserKnownHostsFile ~/.ssh/limessh_known_hosts_%C'
+        )) {
+        throw 'The short SSH command or one-time host-key-safe client config is invalid.'
+    }
     if ($status.ScpTemplate -notmatch [regex]::Escape("-o User=$($status.SessionId)") -or
         $status.SftpCommand -notmatch [regex]::Escape("-o User=$($status.SessionId)")) {
         throw 'SCP/SFTP commands do not safely pass the relay session as an explicit SSH user.'
     }
-    if (-not (Test-Path -LiteralPath $connectionPath) -or
-        (Get-Content -LiteralPath $connectionPath -Raw) -notmatch [regex]::Escape($status.SshCommand)) {
+    $connectionText = if (Test-Path -LiteralPath $connectionPath) {
+        Get-Content -LiteralPath $connectionPath -Raw
+    }
+    if (-not $connectionText -or
+        $connectionText -notmatch [regex]::Escape($status.SshCommand) -or
+        $connectionText -notmatch [regex]::Escape($status.ShortSshCommand) -or
+        $connectionText -notmatch 'limessh_known_hosts_%C') {
         throw 'The manager did not write copyable connection details.'
     }
     $repeatResult = & $manager -Action Start @managerArguments
@@ -186,6 +200,7 @@ try {
         GitHubEnrollment = if ($SkipGitHubEnrollment) { 'skipped' } else { 'passed' }
         Enrollment = 'passed'
         SessionCommand = 'passed'
+        ShortCommand = 'passed'
         SingleProcess = 'passed'
         AuthorizedKey = 'passed'
         RejectedKey = 'passed'

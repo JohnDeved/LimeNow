@@ -2,8 +2,10 @@
 param(
     [string]$LimeSshPath = (Join-Path $PSScriptRoot '..\artifacts\limessh-prototype.exe'),
     [string]$RelayPath = (Join-Path $PSScriptRoot '..\artifacts\uptermd-prototype.exe'),
+    [string]$Server,
     [string]$MachineShell = 'cmd.exe /d /q /k',
     [switch]$SkipInteractive,
+    [ValidateRange(0, 120)][int]$DisconnectCleanupTimeoutSeconds = 0,
     [ValidateRange(1024, 65535)][int]$Port = 43222
 )
 
@@ -69,7 +71,11 @@ function Get-FreeTcpPort {
 }
 
 try {
-    foreach ($path in @($LimeSshPath, $RelayPath)) {
+    $requiredPaths = @($LimeSshPath)
+    if (-not $Server) {
+        $requiredPaths += $RelayPath
+    }
+    foreach ($path in $requiredPaths) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Missing prototype binary: $path. Run tools\Build-LimeSshPrototype.ps1 first."
         }
@@ -87,16 +93,44 @@ try {
         throw 'Unable to create the temporary client key.'
     }
 
-    $relay = Start-Process `
-        -FilePath $RelayPath `
-        -ArgumentList '--ssh-addr', "127.0.0.1:$Port" `
-        -RedirectStandardOutput (Join-Path $testRoot 'relay.out') `
-        -RedirectStandardError (Join-Path $testRoot 'relay.err') `
-        -PassThru `
-        -WindowStyle Hidden
-    Start-Sleep -Seconds 1
-    if ($relay.HasExited) {
-        throw "uptermd exited during startup.`n$(Get-Content (Join-Path $testRoot 'relay.err') -Raw)"
+    $serverAddress = if ($Server) {
+        $Server
+    }
+    else {
+        "ssh://127.0.0.1:$Port"
+    }
+    $effectiveDisconnectCleanupTimeoutSeconds = if ($DisconnectCleanupTimeoutSeconds -gt 0) {
+        $DisconnectCleanupTimeoutSeconds
+    }
+    elseif ($Server) {
+        75
+    }
+    else {
+        10
+    }
+    $parsedServer = $null
+    if (-not [Uri]::TryCreate(
+            $serverAddress,
+            [UriKind]::Absolute,
+            [ref]$parsedServer
+        ) -or
+        $parsedServer.Scheme -notin @('ssh', 'ws', 'wss') -or
+        -not $parsedServer.Host) {
+        throw "Invalid relay server URI: $serverAddress"
+    }
+
+    if (-not $Server) {
+        $relay = Start-Process `
+            -FilePath $RelayPath `
+            -ArgumentList '--ssh-addr', "127.0.0.1:$Port" `
+            -RedirectStandardOutput (Join-Path $testRoot 'relay.out') `
+            -RedirectStandardError (Join-Path $testRoot 'relay.err') `
+            -PassThru `
+            -WindowStyle Hidden
+        Start-Sleep -Seconds 1
+        if ($relay.HasExited) {
+            throw "uptermd exited during startup.`n$(Get-Content (Join-Path $testRoot 'relay.err') -Raw)"
+        }
     }
 
     $hostOutput = Join-Path $testRoot 'host.out'
@@ -105,7 +139,7 @@ try {
         -FilePath $LimeSshPath `
         -ArgumentList @(
             'host',
-            '--server', "ssh://127.0.0.1:$Port",
+            '--server', $serverAddress,
             '--machine-mode',
             '--machine-shell', "`"$MachineShell`"",
             '--authorized-keys', "$clientKey.pub",
@@ -118,25 +152,29 @@ try {
         -PassThru `
         -WindowStyle Hidden
 
-    $sshTarget = $null
-    $deadline = [DateTime]::UtcNow.AddSeconds(20)
-    while ([DateTime]::UtcNow -lt $deadline -and -not $sshTarget) {
+    $targetLine = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    while ([DateTime]::UtcNow -lt $deadline -and -not $targetLine) {
         Start-Sleep -Milliseconds 250
         if ($hostProcess.HasExited) {
             throw "LimeSSH exited during startup.`n$(Get-Content $hostError -Raw)"
         }
         if (Test-Path -LiteralPath $hostOutput) {
-            $line = Get-Content -LiteralPath $hostOutput |
-                Where-Object { $_ -match "^\s+ssh (.+@127\.0\.0\.1) -p $Port$" } |
+            $targetLine = Get-Content -LiteralPath $hostOutput |
+                Where-Object { $_ -match '^\s*ssh\s+[^@\s]+@[^\s]+' } |
                 Select-Object -First 1
-            if ($line -match "^\s+ssh (.+@127\.0\.0\.1) -p $Port$") {
-                $sshTarget = $Matches[1]
-            }
         }
     }
-    if (-not $sshTarget) {
+    if (-not $targetLine) {
         throw 'Timed out waiting for LimeSSH to publish its session address.'
     }
+    if ($targetLine -notmatch '^\s*ssh\s+([^@\s]+)@([^\s]+?)(?:\s+-p\s+(\d+))?\s*$') {
+        throw "Unable to parse the LimeSSH session address: $targetLine"
+    }
+    $sessionUser = $Matches[1]
+    $sessionHost = $Matches[2]
+    $sessionPort = if ($Matches[3]) { [int]$Matches[3] } else { 22 }
+    $sshTarget = "$sessionUser@$sessionHost"
 
     $common = @(
         '-T',
@@ -144,7 +182,7 @@ try {
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=NUL',
         '-i', $clientKey,
-        '-p', ([string]$Port),
+        '-p', ([string]$sessionPort),
         $sshTarget
     )
     $execOutput = & ssh.exe @common 'echo LIMESSH_EXEC_OK' 2>&1
@@ -157,8 +195,6 @@ try {
         throw "Machine-mode exit status was $LASTEXITCODE instead of 7."
     }
 
-    $sessionUser, $sessionHost = $sshTarget -split '@', 2
-
     $interactiveStatus = 'skipped'
     if (-not $SkipInteractive) {
         $interactive = Start-CapturedProcess `
@@ -169,7 +205,7 @@ try {
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=NUL',
                 '-i', $clientKey,
-                '-p', ([string]$Port),
+                '-p', ([string]$sessionPort),
                 $sshTarget
         )
         $interactive.StandardInput.WriteLine('echo LIMESSH_INTERACTIVE_OK')
@@ -203,7 +239,7 @@ try {
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=NUL',
         '-i', $clientKey,
-        '-p', ([string]$Port),
+        '-p', ([string]$sessionPort),
         $sshTarget
     )
     $first = Start-CapturedProcess `
@@ -227,7 +263,7 @@ try {
         -oUserKnownHostsFile=NUL `
         "-oUser=$sessionUser" `
         -i $clientKey `
-        -P $Port `
+        -P $sessionPort `
         $sessionHost 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "SFTP validation failed.`n$($sftpOutput -join [Environment]::NewLine)"
@@ -243,7 +279,7 @@ try {
         -oUserKnownHostsFile=NUL `
         "-oUser=$sessionUser" `
         -i $clientKey `
-        -P $Port `
+        -P $sessionPort `
         $scpSource `
         "${sessionHost}:$scpRemote" 2>&1
     $scpUploadCode = $LASTEXITCODE
@@ -259,7 +295,7 @@ try {
         -oUserKnownHostsFile=NUL `
         "-oUser=$sessionUser" `
         -i $clientKey `
-        -P $Port `
+        -P $sessionPort `
         "${sessionHost}:$scpRemote" `
         $scpDownload 2>&1
     if ($LASTEXITCODE -ne 0 -or
@@ -285,7 +321,7 @@ try {
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=NUL',
                 '-i', $clientKey,
-                '-p', ([string]$Port),
+                '-p', ([string]$sessionPort),
                 '-L', "127.0.0.1:${forwardPort}:127.0.0.1:$targetPort",
                 $sshTarget
             )
@@ -365,7 +401,7 @@ try {
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=NUL',
                 '-i', $clientKey,
-                '-p', ([string]$Port),
+                '-p', ([string]$sessionPort),
                 '-L', "127.0.0.1:${ipv6ForwardPort}:[::1]:$ipv6TargetPort",
                 $sshTarget
             )
@@ -423,7 +459,7 @@ try {
             '-o', 'StrictHostKeyChecking=no',
             '-o', 'UserKnownHostsFile=NUL',
             '-i', $clientKey,
-            '-p', ([string]$Port),
+            '-p', ([string]$sessionPort),
             '-L', "127.0.0.1:${rejectedPort}:192.0.2.1:9",
             $sshTarget
         )
@@ -538,13 +574,17 @@ try {
         }
         throw 'The forced-disconnect command did not start its child process.'
     }
+    $disconnectStopwatch = [Diagnostics.Stopwatch]::StartNew()
     $disconnectSession.Kill($true)
     $disconnectSession.WaitForExit()
-    $disconnectDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    $disconnectDeadline = [DateTime]::UtcNow.AddSeconds(
+        $effectiveDisconnectCleanupTimeoutSeconds
+    )
     while ((Get-Process -Id $disconnectPingIds -ErrorAction SilentlyContinue) -and
         [DateTime]::UtcNow -lt $disconnectDeadline) {
         Start-Sleep -Milliseconds 100
     }
+    $disconnectStopwatch.Stop()
     $disconnectSurvivors = @(
         Get-Process -Id $disconnectPingIds -ErrorAction SilentlyContinue
     )
@@ -553,6 +593,7 @@ try {
     }
 
     [pscustomobject]@{
+        Relay = $serverAddress
         SessionTarget = $sshTarget
         Interactive = $interactiveStatus
         Exec = 'passed'
@@ -565,6 +606,8 @@ try {
         NonLoopbackRejection = 'passed'
         ProcessTreeCleanupOnExit = 'passed'
         AbruptDisconnectCleanup = 'passed'
+        AbruptDisconnectCleanupSeconds = [Math]::Round($disconnectStopwatch.Elapsed.TotalSeconds, 1)
+        AbruptDisconnectCleanupLimitSeconds = $effectiveDisconnectCleanupTimeoutSeconds
     }
 }
 finally {

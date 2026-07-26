@@ -53,6 +53,14 @@ session receives a new relay address. LimeNow copies a host-key-safe `ssh`
 command to the clipboard and writes SSH, SCP, SFTP, and optional config examples
 to **LimeSSH Connection.txt** on the desktop.
 
+The connection file also includes a one-time personal-PC SSH configuration that
+keeps a separate known-hosts entry for every session. After adding it, future
+sessions use the shorter standard form:
+
+```shell
+ssh SESSION_ID@uptermd.upterm.dev
+```
+
 This is a preview, not a production support claim. It currently defaults to the
 public Upterm community relay, which is the MVP endpoint and an external
 best-effort dependency. A LimeNow-operated relay is a future feature, not an

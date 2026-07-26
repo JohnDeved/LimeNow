@@ -155,7 +155,24 @@ function Get-SessionStatus {
         return $null
     }
     try {
-        return Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+        if ($status.SessionId -and
+            $status.Host -and
+            $status.PSObject.Properties.Name -notcontains 'ShortSshCommand') {
+            $portSuffix = if ($status.Port -and [int]$status.Port -ne 22) {
+                " -p $($status.Port)"
+            }
+            else {
+                ''
+            }
+            $targetLine = "ssh $($status.SessionId)@$($status.Host)$portSuffix"
+            $details = Get-SshConnectionDetails -TargetLine $targetLine
+            $status | Add-Member -NotePropertyName ShortSshCommand `
+                -NotePropertyValue $details.ShortSshCommand
+            $status | Add-Member -NotePropertyName OneTimeClientConfig `
+                -NotePropertyValue $details.OneTimeClientConfig
+        }
+        return $status
     }
     catch {
         return $null
@@ -223,6 +240,7 @@ function Get-SshConnectionDetails {
     $userOption = "-o User=$sessionUser"
     $target = "$sessionUser@$sessionHost"
     $sshCommand = "ssh $commonOptions$portOption $target"
+    $shortSshCommand = "ssh$portOption $target"
     $scpPortOption = if ($sessionPort -ne 22) { " -P $sessionPort" } else { '' }
     $config = @"
 Host $alias
@@ -232,15 +250,22 @@ Host $alias
     HostKeyAlias $alias
     StrictHostKeyChecking accept-new
 "@
+    $oneTimeClientConfig = @"
+Host $sessionHost
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/limessh_known_hosts_%C
+"@
     return [pscustomobject]@{
         SessionId = $sessionUser
         Host = $sessionHost
         Port = $sessionPort
         Alias = $alias
         SshCommand = $sshCommand
+        ShortSshCommand = $shortSshCommand
         ScpTemplate = "scp $commonOptions $userOption$scpPortOption FILE $sessionHost`:DESTINATION"
         SftpCommand = "sftp $commonOptions $userOption$scpPortOption $sessionHost"
         SshConfig = $config
+        OneTimeClientConfig = $oneTimeClientConfig
     }
 }
 
@@ -252,6 +277,9 @@ Remote access ready
 
 $($Status.SshCommand)
 
+Short SSH command after one-time client setup:
+$($Status.ShortSshCommand)
+
 SCP:
 $($Status.ScpTemplate)
 
@@ -260,6 +288,9 @@ $($Status.SftpCommand)
 
 Optional SSH config:
 $($Status.SshConfig)
+
+One-time client setup (%USERPROFILE%\.ssh\config on Windows):
+$($Status.OneTimeClientConfig)
 "@
     Set-Content -LiteralPath $connectionPath -Value $text -Encoding utf8
     if (-not $Startup) {
@@ -267,6 +298,11 @@ $($Status.SshConfig)
         Write-Host 'Remote access ready' -ForegroundColor Green
         Write-Host ''
         Write-Host $Status.SshCommand -ForegroundColor Cyan
+        if ($Status.ShortSshCommand) {
+            Write-Host ''
+            Write-Host 'After the one-time client config:' -ForegroundColor DarkGray
+            Write-Host $Status.ShortSshCommand -ForegroundColor Cyan
+        }
         Write-Host ''
         try {
             Set-Clipboard -Value $Status.SshCommand
@@ -363,9 +399,11 @@ function Start-LimeSsh {
             Port = $details.Port
             Alias = $details.Alias
             SshCommand = $details.SshCommand
+            ShortSshCommand = $details.ShortSshCommand
             ScpTemplate = $details.ScpTemplate
             SftpCommand = $details.SftpCommand
             SshConfig = $details.SshConfig
+            OneTimeClientConfig = $details.OneTimeClientConfig
         }
         $status |
             ConvertTo-Json -Depth 3 |

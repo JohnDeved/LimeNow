@@ -117,20 +117,31 @@ The pinned prototype currently passes a loopback relay test for:
 - prompt termination of an active command after the local OpenSSH process is
   forcibly terminated.
 
-The same binary was then run inside the actual GFN VM
+The same full harness then passed inside the actual GFN VM
 (`GEFORCE-NOW\kiosk` on computer `GEFORCE-NOW`) against the public
-`ssh://uptermd.upterm.dev:22` relay. A second OpenSSH client reached the
-session-scoped address through that relay, executed
-`echo LIMESSH_PUBLIC_RELAY_OK`, and returned exit code 0. This proves the
-outbound-tunnel and relayed SSH transport from GFN; the machine does not need
-an inbound port.
+`ssh://uptermd.upterm.dev:22` relay. It validated interactive ConPTY, exec and
+exit status, concurrent channels, SFTP/SCP, IPv4 and IPv6 loopback forwarding,
+non-loopback rejection, and both normal and abrupt process-tree cleanup through
+the public relay. The machine needs no inbound port.
 
-Together these results prove gates 1-9 and the public-relay transport portions
-of gates 10 and 12. The complete public-relay matrix remains to be exercised
-before gate 10 is closed. VS Code Remote SSH is deferred: the GFN image blocks
-legacy Windows PowerShell, which the current Microsoft bootstrap invokes even
-when PowerShell 7 is available. That limitation does not affect normal OpenSSH
-shell, exec, SFTP, SCP, or forwarding clients.
+The community relay took 58.3 seconds to propagate an abruptly killed client's
+connection close through its keepalive path. LimeSSH then killed the remote
+process tree within the harness's 75-second external-relay bound. This is a
+measured limitation of the external best-effort MVP dependency; explicitly
+stopping the LimeSSH host still revokes the whole relay session immediately.
+
+Together these results prove gates 1-10 and the normal-SSH portion of gate 12.
+VS Code Remote SSH is deferred: the GFN image blocks legacy Windows PowerShell,
+which the current Microsoft bootstrap invokes even when PowerShell 7 is
+available. That limitation does not affect normal OpenSSH shell, exec, SFTP,
+SCP, or forwarding clients.
+
+Run the full public-relay matrix from GFN with:
+
+```powershell
+& .\tools\Test-LimeSshPrototype.ps1 `
+    -Server 'ssh://uptermd.upterm.dev:22'
+```
 
 The opt-in LimeNow manager now also passes a loopback-relay product-lifecycle
 test for:
@@ -141,6 +152,8 @@ test for:
 - rejecting an unconfigured client key;
 - emitting a copyable session-specific SSH command with `HostKeyAlias` and
   `StrictHostKeyChecking accept-new`;
+- emitting a short standard SSH command plus a one-time `%C`-scoped client
+  configuration that safely isolates each session's ephemeral host key;
 - emitting SCP/SFTP commands that safely handle relay usernames containing
   colons;
 - reusing the single managed process on repeated startup;
