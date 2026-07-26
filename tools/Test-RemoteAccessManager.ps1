@@ -196,6 +196,11 @@ try {
         throw "SSH access remained available after the LimeSSH process stopped.`n$($stoppedOutput -join [Environment]::NewLine)"
     }
 
+    # The rejected post-stop SSH probe is the final native process in this
+    # successful test. Do not leak its expected nonzero code to callers such as
+    # the GitHub Actions PowerShell wrapper.
+    $global:LASTEXITCODE = 0
+
     [pscustomobject]@{
         GitHubEnrollment = if ($SkipGitHubEnrollment) { 'skipped' } else { 'passed' }
         Enrollment = 'passed'
