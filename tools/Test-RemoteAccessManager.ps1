@@ -40,6 +40,8 @@ try {
     }
 
     New-Item -ItemType Directory -Path $testRoot | Out-Null
+    $isolatedLimeSshPath = Join-Path $testRoot 'LimeSSH-manager-test.exe'
+    Copy-Item -LiteralPath $LimeSshPath -Destination $isolatedLimeSshPath
     $clientKey = Join-Path $testRoot 'client'
     $wrongKey = Join-Path $testRoot 'wrong-client'
     & ssh-keygen.exe -q -t ed25519 -N '' -f $clientKey
@@ -78,7 +80,7 @@ try {
     $managerArguments = @{
         InstallRoot = $installRoot
         StateRoot = $stateRoot
-        LimeSshPath = $LimeSshPath
+        LimeSshPath = $isolatedLimeSshPath
         ConnectionPath = $connectionPath
     }
 
@@ -146,6 +148,35 @@ try {
         throw 'A repeated start did not reuse the single managed LimeSSH process.'
     }
 
+    $copyResult = & $manager -Action Copy @managerArguments
+    $copyStatus = $copyResult |
+        Where-Object { $_.PSObject.Properties.Name -contains 'SshCommand' } |
+        Select-Object -Last 1
+    if (-not $copyStatus -or $copyStatus.ProcessId -ne $status.ProcessId) {
+        throw 'The Copy action did not return the current managed session.'
+    }
+
+    $refreshResult = & $manager -Action Refresh @managerArguments
+    $refreshStatus = $refreshResult |
+        Where-Object { $_.PSObject.Properties.Name -contains 'SshCommand' } |
+        Select-Object -Last 1
+    if (-not $refreshStatus -or
+        $refreshStatus.SessionId -eq $status.SessionId -or
+        $refreshStatus.StartedAt -eq $status.StartedAt) {
+        throw 'The Refresh action did not fetch keys into a new relay session.'
+    }
+
+    $retryResult = & $manager -Action Retry @managerArguments
+    $retryStatus = $retryResult |
+        Where-Object { $_.PSObject.Properties.Name -contains 'SshCommand' } |
+        Select-Object -Last 1
+    if (-not $retryStatus -or
+        $retryStatus.SessionId -eq $refreshStatus.SessionId -or
+        $retryStatus.StartedAt -eq $refreshStatus.StartedAt) {
+        throw 'The Retry action did not replace the relay session.'
+    }
+    $status = $retryStatus
+
     $target = "$($status.SessionId)@$($status.Host)"
     $common = @(
         '-T',
@@ -206,6 +237,9 @@ try {
         Enrollment = 'passed'
         SessionCommand = 'passed'
         ShortCommand = 'passed'
+        CopyAction = 'passed'
+        RefreshAction = 'passed'
+        RetryAction = 'passed'
         SingleProcess = 'passed'
         AuthorizedKey = 'passed'
         RejectedKey = 'passed'

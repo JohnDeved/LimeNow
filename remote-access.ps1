@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Configure', 'Status', 'Stop')]
+    [ValidateSet('Start', 'Configure', 'Status', 'Copy', 'Refresh', 'Retry', 'Stop', 'Manage')]
     [string]$Action = 'Start',
     [string]$GitHubUser,
     [string[]]$PublicKey,
@@ -270,7 +270,10 @@ Host $sessionHost
 }
 
 function Show-ConnectionDetails {
-    param([Parameter(Mandatory)]$Status)
+    param(
+        [Parameter(Mandatory)]$Status,
+        [bool]$CopyToClipboard = $true
+    )
 
     $text = @"
 Remote access ready
@@ -304,12 +307,14 @@ $($Status.OneTimeClientConfig)
             Write-Host $Status.ShortSshCommand -ForegroundColor Cyan
         }
         Write-Host ''
-        try {
-            Set-Clipboard -Value $Status.SshCommand
-            Write-Host 'The SSH command was copied to the clipboard.'
-        }
-        catch {
-            Write-Host "Connection details were written to $connectionPath"
+        if ($CopyToClipboard) {
+            try {
+                Set-Clipboard -Value $Status.SshCommand
+                Write-Host 'The SSH command was copied to the clipboard.'
+            }
+            catch {
+                Write-Host "Connection details were written to $connectionPath"
+            }
         }
     }
 }
@@ -419,6 +424,86 @@ function Start-LimeSsh {
             $process.WaitForExit(5000) | Out-Null
         }
         throw
+    }
+}
+
+function Copy-LimeSshCommand {
+    Remove-StaleSessionState
+    $status = Get-SessionStatus
+    if (-not $status -or -not (Get-ManagedHostProcess)) {
+        Write-RemoteAccessLog 'LimeSSH is not running.'
+        return
+    }
+    try {
+        Set-Clipboard -Value $status.SshCommand
+        Write-RemoteAccessLog 'Copied the current SSH command to the clipboard.'
+    }
+    catch {
+        Write-RemoteAccessLog "Clipboard copy failed; use $connectionPath instead."
+    }
+    return $status
+}
+
+function Restart-LimeSsh {
+    param([Parameter(Mandatory)][string]$Reason)
+
+    $config = Read-RemoteAccessConfig
+    if (-not $config -or -not $config.Enabled) {
+        Write-RemoteAccessLog 'Remote access is not configured or is disabled.'
+        return
+    }
+    Stop-LimeSsh
+    Write-RemoteAccessLog $Reason
+    return Start-LimeSsh
+}
+
+function Manage-LimeSsh {
+    while ($true) {
+        Remove-StaleSessionState
+        $status = Get-SessionStatus
+        if ($status) {
+            Show-ConnectionDetails -Status $status -CopyToClipboard $false
+        }
+        else {
+            Write-Host ''
+            Write-Host 'LimeSSH is not running.' -ForegroundColor Yellow
+        }
+
+        Write-Host ''
+        Write-Host '[C] Copy SSH command'
+        Write-Host '[K] Refresh GitHub keys and restart'
+        Write-Host '[R] Retry / restart session'
+        Write-Host '[G] Configure enrollment'
+        Write-Host '[S] Stop remote access'
+        Write-Host '[Q] Close manager'
+        $response = Read-Host 'Choose an action'
+        if ([string]::IsNullOrWhiteSpace($response)) {
+            return
+        }
+        $selection = $response.Trim().ToUpperInvariant()
+        switch ($selection) {
+            'C' {
+                [void](Copy-LimeSshCommand)
+            }
+            'K' {
+                [void](Restart-LimeSsh -Reason 'Refreshing configured public keys.')
+            }
+            'R' {
+                [void](Restart-LimeSsh -Reason 'Retrying the LimeSSH relay session.')
+            }
+            'G' {
+                [void](Configure-LimeSsh)
+            }
+            'S' {
+                Stop-LimeSsh
+            }
+            'Q' {
+                return
+            }
+            default {
+                Write-Host 'Unknown selection.' -ForegroundColor Yellow
+            }
+        }
     }
 }
 
@@ -535,15 +620,27 @@ try {
             Remove-StaleSessionState
             $status = Get-SessionStatus
             if ($status) {
-                Show-ConnectionDetails -Status $status
+                Show-ConnectionDetails -Status $status -CopyToClipboard $false
                 $status
             }
             else {
                 Write-RemoteAccessLog 'LimeSSH is not running.'
             }
         }
+        'Copy' {
+            Copy-LimeSshCommand
+        }
+        'Refresh' {
+            Restart-LimeSsh -Reason 'Refreshing configured public keys.'
+        }
+        'Retry' {
+            Restart-LimeSsh -Reason 'Retrying the LimeSSH relay session.'
+        }
         'Stop' {
             Stop-LimeSsh
+        }
+        'Manage' {
+            Manage-LimeSsh
         }
     }
 }

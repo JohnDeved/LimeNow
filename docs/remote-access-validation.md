@@ -154,6 +154,8 @@ test for:
   `StrictHostKeyChecking accept-new`;
 - emitting a short standard SSH command plus a one-time `%C`-scoped client
   configuration that safely isolates each session's ephemeral host key;
+- copying the active command, refreshing public keys into a new session, and
+  retrying with another new relay session;
 - emitting SCP/SFTP commands that safely handle relay usernames containing
   colons;
 - reusing the single managed process on repeated startup;

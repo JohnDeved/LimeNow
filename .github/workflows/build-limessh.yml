@@ -6,9 +6,12 @@ on:
     paths:
       - .github/workflows/build-limessh.yml
       - patches/0001-Add-LimeSSH-machine-mode.patch
+      - codex-state.ps1
       - remote-access.ps1
+      - setup.ps1
       - tools/Build-LimeSshPrototype.ps1
       - tools/Test-LimeSshPrototype.ps1
+      - tools/Test-CodexPersistence.ps1
       - tools/Test-RemoteAccessManager.ps1
   push:
     branches:
@@ -16,9 +19,12 @@ on:
     paths:
       - .github/workflows/build-limessh.yml
       - patches/0001-Add-LimeSSH-machine-mode.patch
+      - codex-state.ps1
       - remote-access.ps1
+      - setup.ps1
       - tools/Build-LimeSshPrototype.ps1
       - tools/Test-LimeSshPrototype.ps1
+      - tools/Test-CodexPersistence.ps1
       - tools/Test-RemoteAccessManager.ps1
 
 permissions:
@@ -59,6 +65,24 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
+          foreach ($script in @(
+            '.\codex-state.ps1',
+            '.\remote-access.ps1',
+            '.\setup.ps1',
+            '.\tools\Test-CodexPersistence.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile(
+              $script,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count) {
+              throw "$script failed syntax validation: $($parseErrors -join '; ')"
+            }
+          }
+          & .\tools\Test-CodexPersistence.ps1
           & .\tools\Test-LimeSshPrototype.ps1 `
             -LimeSshPath .\dist\LimeSSH.exe `
             -RelayPath .\dist\uptermd.exe

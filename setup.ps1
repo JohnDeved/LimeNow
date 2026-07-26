@@ -11,6 +11,12 @@ $limeNowAppsRoot = 'I:\Apps\LimeNow'
 $nodeRoot = Join-Path $limeNowAppsRoot 'NodeJS'
 $npmGlobalRoot = Join-Path $limeNowAppsRoot 'NpmGlobal'
 $npmCacheRoot = Join-Path $limeNowAppsRoot 'NpmCache'
+$codexRoot = Join-Path $limeNowAppsRoot 'Codex'
+$codexBinRoot = Join-Path $codexRoot 'bin'
+$codexStateManager = Join-Path $codexRoot 'codex-state.ps1'
+$codexStateManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/codex-state.ps1'
+$codexWrapper = Join-Path $codexBinRoot 'codex.cmd'
+$codexVersion = '0.145.0'
 $nodeVersion = 'v24.18.0'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
 $gitRoot = Join-Path $limeNowAppsRoot 'Git'
@@ -467,6 +473,7 @@ function Ensure-DeveloperEnvironment {
     New-Item -ItemType Directory -Path $npmGlobalRoot, $npmCacheRoot -Force | Out-Null
     $requiredPathEntries = @(
         $nodeRoot,
+        $codexBinRoot,
         $npmGlobalRoot,
         (Join-Path $gitRoot 'cmd'),
         (Join-Path $vscodeRoot 'bin'),
@@ -505,6 +512,135 @@ function Ensure-DeveloperEnvironment {
     Write-SetupLog 'Verified persistent developer-tool PATH and Windows certificate-store support.'
 }
 
+function Test-CodexInstall {
+    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
+    $packageManifest = Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
+    if (-not (Test-Path -LiteralPath $codexCommand) -or
+        -not (Test-Path -LiteralPath $packageManifest)) {
+        return $false
+    }
+
+    try {
+        $versionOutput = (& $codexCommand --version 2>$null | Select-Object -First 1)
+        $manifest = Get-Content -LiteralPath $packageManifest -Raw | ConvertFrom-Json
+        return $manifest.version -eq $codexVersion -and
+            $versionOutput -eq "codex-cli $codexVersion"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Repair-CodexCli {
+    if (Test-CodexInstall) {
+        $manifest = Get-Content -LiteralPath (
+            Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
+        ) -Raw | ConvertFrom-Json
+        Write-SetupLog "Verified official Codex CLI $($manifest.version)."
+        return
+    }
+
+    $npmCommand = Join-Path $nodeRoot 'npm.cmd'
+    Write-SetupLog 'Codex CLI is missing or incomplete; installing official @openai/codex.'
+    & $npmCommand install --global "@openai/codex@$codexVersion" `
+        --prefix $npmGlobalRoot `
+        --cache $npmCacheRoot `
+        --no-audit `
+        --no-fund `
+        --loglevel error
+    $npmSucceeded = $?
+    if (-not $npmSucceeded) {
+        throw 'npm failed to install @openai/codex.'
+    }
+    if (-not (Test-CodexInstall)) {
+        throw 'Codex CLI verification failed after npm installation.'
+    }
+
+    $manifest = Get-Content -LiteralPath (
+        Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
+    ) -Raw | ConvertFrom-Json
+    Write-SetupLog "Installed/repaired official Codex CLI $($manifest.version)."
+}
+
+function Ensure-CodexStateManager {
+    $localManager = Join-Path (Split-Path -Parent $PSCommandPath) 'codex-state.ps1'
+    $repairRoot = Join-Path $setupRoot ('codex-state-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $candidate = Join-Path $repairRoot 'codex-state.ps1'
+        if (Test-Path -LiteralPath $localManager) {
+            Copy-Item -LiteralPath $localManager -Destination $candidate
+        }
+        else {
+            Invoke-WebRequest `
+                -Uri $codexStateManagerUrl `
+                -OutFile $candidate `
+                -UseBasicParsing `
+                -TimeoutSec 60
+        }
+
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$parseErrors
+        ) | Out-Null
+        if ($parseErrors.Count) {
+            throw 'The Codex state manager failed PowerShell syntax validation.'
+        }
+        Copy-IfChanged -Source $candidate -Destination $codexStateManager
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-CodexLauncher {
+    $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
+    if (-not (Test-Path -LiteralPath $codexCommand)) {
+        throw "Codex command is missing: $codexCommand"
+    }
+
+    Ensure-CodexStateManager
+    & $codexStateManager `
+        -Action Initialize `
+        -PersistentRoot $codexRoot `
+        -SessionCodexHome (Join-Path $env:USERPROFILE '.codex') |
+        ForEach-Object { Write-SetupLog $_ }
+
+    New-Item -ItemType Directory -Path $codexBinRoot -Force | Out-Null
+    $wrapper = @"
+@echo off
+REM LimeNow managed Codex persistence wrapper
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$codexStateManager" -Action Run -PersistentRoot "$codexRoot" -CodexCommand "$codexCommand" %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $codexWrapper -Value $wrapper -Encoding ASCII
+
+    $launcherPath = Join-Path $limeNowAppsRoot 'Open-Codex.cmd'
+    $launcher = @"
+@echo off
+set "NODE_USE_SYSTEM_CA=1"
+set "NPM_CONFIG_PREFIX=$npmGlobalRoot"
+set "NPM_CONFIG_CACHE=$npmCacheRoot"
+set "PATH=$nodeRoot;$codexBinRoot;$npmGlobalRoot;%PATH%"
+cd /d "%USERPROFILE%\Documents"
+call "$codexWrapper" %*
+"@
+    Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding ASCII
+
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $shortcutPath = Join-Path $desktop 'Codex CLI.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $launcherPath
+    $shortcut.WorkingDirectory = $documentsRoot
+    $shortcut.Description = 'OpenAI Codex CLI with persistent LimeNow auth and sessions'
+    $shortcut.IconLocation = "$(Join-Path $nodeRoot 'node.exe'),0"
+    $shortcut.Save()
+    Write-SetupLog 'Verified the Codex launcher, minimal persistent state, and desktop shortcut.'
+}
+
 function Ensure-DeveloperCommandShims {
     $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
     New-Item -ItemType Directory -Path $shimRoot -Force | Out-Null
@@ -512,6 +648,7 @@ function Ensure-DeveloperCommandShims {
         'node.cmd' = Join-Path $nodeRoot 'node.exe'
         'npm.cmd' = Join-Path $nodeRoot 'npm.cmd'
         'npx.cmd' = Join-Path $nodeRoot 'npx.cmd'
+        'codex.cmd' = $codexWrapper
         'git.cmd' = Join-Path $gitRoot 'cmd\git.exe'
         'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
         'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
@@ -539,31 +676,16 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, Git, code, and wt command shims.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, code, and wt command shims.'
 }
 
-function Remove-ObsoleteAuthenticatedTools {
+function Remove-ObsoleteGitHubCli {
     $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
-    foreach ($name in @('codex.cmd', 'gh.cmd')) {
-        $path = Join-Path $shimRoot $name
-        if (Test-Path -LiteralPath $path) {
-            $content = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
-            if ($content -match 'LimeNow managed developer command shim') {
-                Remove-Item -LiteralPath $path -Force
-            }
-        }
-    }
-
-    foreach ($path in @(
-        (Join-Path $limeNowAppsRoot 'Open-Codex.cmd'),
-        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex CLI.lnk'),
-        (Join-Path $npmGlobalRoot 'codex'),
-        (Join-Path $npmGlobalRoot 'codex.cmd'),
-        (Join-Path $npmGlobalRoot 'codex.ps1'),
-        (Join-Path $npmGlobalRoot 'node_modules\@openai\codex')
-    )) {
-        if (Test-Path -LiteralPath $path) {
-            Remove-Item -LiteralPath $path -Recurse -Force
+    $ghShim = Join-Path $shimRoot 'gh.cmd'
+    if (Test-Path -LiteralPath $ghShim) {
+        $content = Get-Content -LiteralPath $ghShim -Raw -ErrorAction SilentlyContinue
+        if ($content -match 'LimeNow managed developer command shim') {
+            Remove-Item -LiteralPath $ghShim -Force
         }
     }
 
@@ -571,7 +693,7 @@ function Remove-ObsoleteAuthenticatedTools {
     if (Test-Path -LiteralPath $oldGhRoot) {
         Remove-Item -LiteralPath $oldGhRoot -Recurse -Force
     }
-    Write-SetupLog 'Removed obsolete LimeNow Codex and GitHub CLI files without touching account data.'
+    Write-SetupLog 'Removed obsolete LimeNow GitHub CLI files without touching account data.'
 }
 
 function Ensure-DeveloperDesktopShortcuts {
@@ -719,9 +841,9 @@ function Ensure-LimeSshShortcut {
     }
     $shortcut = $shell.CreateShortcut((Join-Path $desktop 'LimeSSH Remote Access.lnk'))
     $shortcut.TargetPath = $powerShell
-    $shortcut.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$limeSshManager`" -Action Configure"
+    $shortcut.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$limeSshManager`" -Action Manage"
     $shortcut.WorkingDirectory = $documentsRoot
-    $shortcut.Description = 'Configure and start public-key-only LimeSSH remote access'
+    $shortcut.Description = 'Manage public-key-only LimeSSH remote access'
     $shortcut.Save()
     Write-SetupLog 'Verified the LimeSSH remote-access desktop shortcut.'
 }
@@ -985,12 +1107,14 @@ try {
     Ensure-QwertzKeyboard
     Ensure-SetupCopies
     Ensure-StartupHook
-    Remove-ObsoleteAuthenticatedTools
+    Remove-ObsoleteGitHubCli
     Repair-NodeAndNpm
     Repair-Git
     Repair-VSCode
     Repair-WindowsTerminal
     Ensure-DeveloperEnvironment
+    Repair-CodexCli
+    Ensure-CodexLauncher
     Ensure-DeveloperCommandShims
     Ensure-DeveloperDesktopShortcuts
     Ensure-LimeSshRemoteAccess

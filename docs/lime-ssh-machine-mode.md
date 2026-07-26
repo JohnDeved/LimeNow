@@ -107,6 +107,8 @@ dependency. A LimeNow-operated relay is a future feature, not an MVP gate.
 - publish a one-time client rule using OpenSSH's `%C` connection hash so later
   sessions can use the short `ssh SESSION_ID@uptermd.upterm.dev` form without
   sharing known-hosts entries between ephemeral host keys;
+- expose Copy, Refresh Keys, Retry, Configure, and Stop actions from the
+  persistent desktop manager shortcut;
 - stop the managed process and revoke the relay session.
 
 `setup.ps1` installs only the checksum-pinned prerelease binary and matching
