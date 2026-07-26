@@ -88,8 +88,9 @@ Windows integration tests must cover ConPTY resize, concurrent channels, SFTP,
 Relay and product claims require separate end-to-end evidence on a
 NAT-restricted Windows host, then on GFN. The public-relay probe has now passed
 from an actual GFN VM, proving that outbound reverse-tunnel transport works
-without an inbound port. A pinned self-hosted relay deployment remains a
-separate production gate.
+without an inbound port. The public community relay is the MVP endpoint and an
+external best-effort dependency. A LimeNow-operated relay is a future feature,
+not an MVP gate.
 
 ## LimeNow preview integration
 
@@ -106,6 +107,6 @@ separate production gate.
 `setup.ps1` installs only the checksum-pinned prerelease binary and matching
 Apache-2.0 license, offers first-run enrollment, creates the desktop manager
 shortcut, and restarts an enabled session from SalsaNOW's existing startup
-hook. The community relay is a preview default; the server URL is stored in
-configuration so the production self-hosted endpoint can replace it without a
+hook. The community relay is the MVP default; the server URL remains
+configurable so a future LimeNow-operated endpoint can be added without a
 client design change.

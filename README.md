@@ -54,9 +54,9 @@ command to the clipboard and writes SSH, SCP, SFTP, and optional config examples
 to **LimeSSH Connection.txt** on the desktop.
 
 This is a preview, not a production support claim. It currently defaults to the
-public Upterm community relay so the GFN transport can be exercised. A pinned
-self-hosted LimeNow relay remains required before production use. VS Code Remote
-SSH is not documented as supported.
+public Upterm community relay, which is the MVP endpoint and an external
+best-effort dependency. A LimeNow-operated relay is a future feature, not an
+MVP requirement. VS Code Remote SSH is not documented as supported.
 
 ### Minecraft
 

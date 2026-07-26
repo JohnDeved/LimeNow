@@ -64,9 +64,11 @@ channel as an independent machine session:
 - the host and outbound tunnel use an ephemeral in-memory key;
 - closing a channel kills its complete Windows process tree.
 
-The LimeSSH host connects outbound to a self-hosted `uptermd` relay. The relay
-allocates a random session ID, so a new GFN machine does not need a persistent
-tunnel identity or other long-lived secret under `I:\Apps`.
+For the MVP, the LimeSSH host connects outbound to the public
+`uptermd.upterm.dev` community relay. The relay allocates a random session ID,
+so a new GFN machine does not need a persistent tunnel identity or other
+long-lived secret under `I:\Apps`. A LimeNow-operated relay is a future feature
+and does not block the MVP.
 
 The MVP deliberately uses a session-scoped address rather than promising a
 stable `ssh limenow` alias. A stable protected alias requires a persistent
@@ -86,19 +88,20 @@ Run the prototype as an ordinary Windows foreground process and prove:
 7. disconnecting a session kills its child process tree;
 8. only configured public keys authenticate;
 9. no private client key or long-lived relay credential is persisted;
-10. the same binary passes through the self-hosted relay from a NAT-restricted
-    Windows machine;
+10. the same binary passes through the public community relay from a
+    NAT-restricted Windows machine;
 11. VS Code Remote SSH works with the remote platform set to Windows;
 12. the prototype passes inside an actual GFN session.
 
 The normal-OpenSSH path may be integrated behind an explicitly labeled preview
-after its local and GFN relay gates pass. Production support still requires the
-self-hosted relay gate. Gate 11 independently blocks any VS Code Remote SSH
-support claim; the preview must not imply that VS Code is supported.
+after its local and GFN public-relay gates pass. The community relay is an
+external best-effort MVP dependency; a managed LimeNow relay is a future
+feature. Gate 11 independently blocks any VS Code Remote SSH support claim; the
+preview must not imply that VS Code is supported.
 
 ## Current prototype evidence
 
-The pinned prototype currently passes a loopback self-hosted-relay test for:
+The pinned prototype currently passes a loopback relay test for:
 
 - public-key-only authentication;
 - an interactive `cmd.exe` ConPTY shell;
@@ -122,12 +125,12 @@ session-scoped address through that relay, executed
 outbound-tunnel and relayed SSH transport from GFN; the machine does not need
 an inbound port.
 
-Together these results prove gates 1-9 and the GFN execution portion of gate
-12. A deployment of the pinned self-hosted relay remains necessary to close
-gate 10. VS Code Remote SSH is deferred: the GFN image blocks legacy Windows
-PowerShell, which the current Microsoft bootstrap invokes even when PowerShell
-7 is available. That limitation does not affect normal OpenSSH shell, exec,
-SFTP, SCP, or forwarding clients.
+Together these results prove gates 1-9 and the public-relay transport portions
+of gates 10 and 12. The complete public-relay matrix remains to be exercised
+before gate 10 is closed. VS Code Remote SSH is deferred: the GFN image blocks
+legacy Windows PowerShell, which the current Microsoft bootstrap invokes even
+when PowerShell 7 is available. That limitation does not affect normal OpenSSH
+shell, exec, SFTP, SCP, or forwarding clients.
 
 The opt-in LimeNow manager now also passes a loopback-relay product-lifecycle
 test for:

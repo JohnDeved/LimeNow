@@ -93,8 +93,9 @@ jobs:
           Apache-2.0 license, provenance, and checksums are published alongside
           both Windows binaries.
 
-          This remains a preview while the production self-hosted relay is being
-          deployed. The public community relay is not the production endpoint.
+          This preview uses the public Upterm community relay as an external
+          best-effort MVP dependency. A LimeNow-operated relay is a future
+          feature, not an MVP requirement.
           "@
 
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null

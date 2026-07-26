@@ -11,6 +11,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+$buildEnvironment = [ordered]@{
+    CGO_ENABLED = '0'
+    GOARCH = 'amd64'
+    GOENV = 'off'
+    GOFLAGS = ''
+    GOOS = 'windows'
+    GOAMD64 = 'v1'
+    GOTOOLCHAIN = 'local'
+}
+$previousBuildEnvironment = @{}
+foreach ($name in $buildEnvironment.Keys) {
+    $previousBuildEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    [Environment]::SetEnvironmentVariable($name, $buildEnvironment[$name], 'Process')
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'LimeNow-LimeSSH-Build-' + [Guid]::NewGuid().ToString('N')
 )
@@ -123,6 +138,10 @@ try {
     }
 }
 finally {
+    foreach ($name in $buildEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $previousBuildEnvironment[$name], 'Process')
+    }
+
     $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
     $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if ($resolvedRoot.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase) -and
