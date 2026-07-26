@@ -1,9 +1,10 @@
 # Remote access validation
 
-Issue #1 is intentionally split into validation phases. LimeNow must not present
-remote access as ready until every Phase 1 and Phase 2 check passes.
+LimeNow must not present remote access as ready until the LimeSSH machine-mode
+prototype passes every gate below. The prototype is based on Upterm commit
+`1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9`, not Win32-OpenSSH or `sish`.
 
-## Phase 1: portable OpenSSH
+## Rejected baseline: portable OpenSSH
 
 Run from a normal, non-administrator PowerShell session:
 
@@ -44,12 +45,55 @@ Do not bypass this failure by:
 - substituting a shared-terminal product that lacks normal SSH exec semantics;
 - storing a private relay key or other long-lived secret under `I:\Apps`.
 
-## Phase 2: sish relay
+This harness remains in the repository as reproducible evidence for rejecting
+Win32-OpenSSH as the foreground, non-administrator server. It is not the active
+implementation path.
 
-Phase 2 remains gated on Phase 1. It must also prove how a new GFN machine can
-reclaim a stable private alias without persisting a tunnel private key or other
-long-lived credential. A relay configuration that lets anonymous clients claim
-aliases does not meet the isolation or anti-hijacking requirements.
+## Active prototype: LimeSSH machine mode
+
+The active design is a focused Upterm-derived component that handles each SSH
+channel as an independent machine session:
+
+- interactive shell requests create a new ConPTY and current-user shell;
+- exec requests create a separate process with Windows `cmd.exe /d /s /c`
+  semantics and return its real exit status;
+- SFTP remains available;
+- `direct-tcpip` forwarding is enabled only for loopback destinations by
+  default;
+- authentication accepts only the configured public keys;
+- the host and outbound tunnel use an ephemeral in-memory key;
+- closing a channel kills its complete Windows process tree.
+
+The LimeSSH host connects outbound to a self-hosted `uptermd` relay. The relay
+allocates a random session ID, so a new GFN machine does not need a persistent
+tunnel identity or other long-lived secret under `I:\Apps`.
+
+The MVP deliberately uses a session-scoped address rather than promising a
+stable `ssh limenow` alias. A stable protected alias requires a persistent
+credential, a local discovery helper, or a device-authorization service and is
+outside this phase.
+
+## Validation gates
+
+Run the prototype as an ordinary Windows foreground process and prove:
+
+1. an interactive `ssh` session starts a new ConPTY shell;
+2. `ssh ... "exit /b 7"` returns exit code 7;
+3. simultaneous interactive and exec sessions remain independent;
+4. current OpenSSH `scp` and `sftp` clients work;
+5. local TCP forwarding to `127.0.0.1` and `::1` works;
+6. forwarding to non-loopback destinations is rejected;
+7. disconnecting a session kills its child process tree;
+8. only configured public keys authenticate;
+9. no private client key or long-lived relay credential is persisted;
+10. the same binary passes through the self-hosted relay from a NAT-restricted
+    Windows machine;
+11. VS Code Remote SSH works with the remote platform set to Windows;
+12. the prototype passes inside an actual GFN session.
+
+Only after gates 1-12 pass may LimeNow integrate GitHub public-key enrollment,
+display the session-scoped SSH command and VS Code configuration, or document
+remote access as supported.
 
 ## Completed independent work
 

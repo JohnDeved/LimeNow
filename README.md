@@ -71,6 +71,8 @@ make NVIDIA's short-lived HTTPS proxy certificates appear expired.
 - [Read `install.ps1`](install.ps1)
 - [Read the full extension setup](setup.ps1)
 - [Read the remote-access validation status](docs/remote-access-validation.md)
+- [Read the LimeSSH machine-mode prototype contract](docs/lime-ssh-machine-mode.md)
+- [Inspect the pinned LimeSSH prototype patch](patches/0001-Add-LimeSSH-machine-mode.patch)
 
 LimeNow never asks for, reads, or transmits account passwords, Codex
 credentials, GitHub tokens, private SSH keys, or API keys.

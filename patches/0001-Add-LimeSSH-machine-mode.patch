@@ -1,0 +1,455 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: JohnDeved <24187269+JohnDeved@users.noreply.github.com>
+Date: Sun, 26 Jul 2026 18:09:36 +0200
+Subject: [PATCH] Add LimeSSH machine mode
+
+---
+ cmd/upterm/command/host.go            |  30 ++++++-
+ host/host.go                          |   4 +
+ host/internal/machine_exec_other.go   |   9 +++
+ host/internal/machine_exec_windows.go |  38 +++++++++
+ host/internal/machine_mode_test.go    |  53 ++++++++++++
+ host/internal/server.go               | 111 +++++++++++++++++++++-----
+ host/signer.go                        |   6 ++
+ 7 files changed, 228 insertions(+), 23 deletions(-)
+ create mode 100644 host/internal/machine_exec_other.go
+ create mode 100644 host/internal/machine_exec_windows.go
+ create mode 100644 host/internal/machine_mode_test.go
+
+diff --git a/cmd/upterm/command/host.go b/cmd/upterm/command/host.go
+index 6937def..b6034de 100644
+--- a/cmd/upterm/command/host.go
++++ b/cmd/upterm/command/host.go
+@@ -68,6 +68,8 @@ var (
+ 	flagSkipHostKeyCheck        bool
+ 	flagNoSFTP                  bool
+ 	flagAllowLocalTCPForwarding bool
++	flagMachineMode             bool
++	flagMachineShell            string
+ )
+ 
+ func hostCmd() *cobra.Command {
+@@ -102,6 +104,9 @@ containing client public keys.`,
+   # Allow clients to use local TCP forwarding (ssh -L) through the hosted session:
+   upterm host --allow-local-tcp-forwarding
+ 
++  # Run as an independent-session Windows SSH host:
++  upterm host --machine-mode --github-user YOUR_GITHUB_USER --accept
++
+   # Use a different Uptermd server, hosting a session via WebSocket:
+   upterm host --server wss://YOUR_UPTERMD_SERVER -- YOUR_COMMAND`,
+ 		PreRunE: validateShareRequiredFlags,
+@@ -129,6 +134,8 @@ containing client public keys.`,
+ 	cmd.PersistentFlags().BoolVar(&flagSkipHostKeyCheck, "skip-host-key-check", false, "Automatically accept unknown server host keys and add them to known_hosts (similar to SSH's StrictHostKeyChecking=accept-new). This bypasses host key verification for new connections.")
+ 	cmd.PersistentFlags().BoolVar(&flagNoSFTP, "no-sftp", false, "Disable file transfer via SFTP/SCP. By default, clients can transfer files with the same access as the terminal session.")
+ 	cmd.PersistentFlags().BoolVar(&flagAllowLocalTCPForwarding, "allow-local-tcp-forwarding", false, "Allow clients to use SSH local TCP forwarding (ssh -L) through the hosted session, reaching TCP destinations visible to the host.")
++	cmd.PersistentFlags().BoolVar(&flagMachineMode, "machine-mode", false, "Create an independent process for each SSH shell or exec channel.")
++	cmd.PersistentFlags().StringVar(&flagMachineShell, "machine-shell", "cmd.exe", "Shell executable to start for machine-mode interactive sessions.")
+ 
+ 	return cmd
+ }
+@@ -139,6 +146,12 @@ func validateShareRequiredFlags(c *cobra.Command, args []string) error {
+ 	if flagReadOnly && flagAllowLocalTCPForwarding {
+ 		result = multierror.Append(result, fmt.Errorf("--read-only and --allow-local-tcp-forwarding cannot be used together: a read-only session must not permit network pivoting through the host"))
+ 	}
++	if flagMachineMode && flagReadOnly {
++		result = multierror.Append(result, fmt.Errorf("--machine-mode and --read-only cannot be used together"))
++	}
++	if flagMachineMode && flagForceCommand != "" {
++		result = multierror.Append(result, fmt.Errorf("--machine-mode and --force-command cannot be used together"))
++	}
+ 
+ 	if flagServer == "" {
+ 		result = multierror.Append(result, fmt.Errorf("missing flag --server"))
+@@ -189,7 +202,7 @@ func shareRunE(c *cobra.Command, args []string) error {
+ 	}
+ 
+ 	var err error
+-	if len(args) == 0 {
++	if len(args) == 0 && !flagMachineMode {
+ 		shellCmd := getDefaultShell()
+ 		args, err = shlex.Split(shellCmd)
+ 		if err != nil {
+@@ -250,8 +263,17 @@ func shareRunE(c *cobra.Command, args []string) error {
+ 		}
+ 		authorizedKeys = append(authorizedKeys, sourceHutUserKeys...)
+ 	}
++	if flagMachineMode && len(authorizedKeys) == 0 {
++		return fmt.Errorf("--machine-mode requires at least one authorized public key")
++	}
+ 
+-	signers, cleanup, err := host.Signers(flagPrivateKeys)
++	var signers []ssh.Signer
++	var cleanup func()
++	if flagMachineMode {
++		signers, err = host.EphemeralSigners()
++	} else {
++		signers, cleanup, err = host.Signers(flagPrivateKeys)
++	}
+ 	if err != nil {
+ 		return fmt.Errorf("error reading private keys: %w", err)
+ 	}
+@@ -292,7 +314,9 @@ func shareRunE(c *cobra.Command, args []string) error {
+ 		Stdout:                  os.Stdout,
+ 		Logger:                  logger.Logger,
+ 		ReadOnly:                flagReadOnly,
+-		AllowLocalTCPForwarding: flagAllowLocalTCPForwarding,
++		AllowLocalTCPForwarding: flagAllowLocalTCPForwarding || flagMachineMode,
++		MachineMode:             flagMachineMode,
++		MachineShell:            []string{flagMachineShell},
+ 		SFTPDisabled:            flagNoSFTP,
+ 		SFTPPermissionChecker:   sftpPermissionChecker,
+ 	}
+diff --git a/host/host.go b/host/host.go
+index 5a26e03..4b9a3e7 100644
+--- a/host/host.go
++++ b/host/host.go
+@@ -206,6 +206,8 @@ type Host struct {
+ 	Stdout                         *os.File
+ 	ReadOnly                       bool
+ 	AllowLocalTCPForwarding        bool
++	MachineMode                    bool
++	MachineShell                   []string
+ 	ForceForwardingInputForTesting bool
+ 
+ 	// SFTP configuration
+@@ -383,6 +385,8 @@ func (c *Host) Run(ctx context.Context) error {
+ 			Logger:                         logger.With("component", "server"),
+ 			ReadOnly:                       c.ReadOnly,
+ 			AllowLocalTCPForwarding:        c.AllowLocalTCPForwarding,
++			MachineMode:                    c.MachineMode,
++			MachineShell:                   c.MachineShell,
+ 			ForceForwardingInputForTesting: c.ForceForwardingInputForTesting,
+ 			SFTPDisabled:                   c.SFTPDisabled,
+ 			SFTPPermissionChecker:          c.SFTPPermissionChecker,
+diff --git a/host/internal/machine_exec_other.go b/host/internal/machine_exec_other.go
+new file mode 100644
+index 0000000..9c49e8f
+--- /dev/null
++++ b/host/internal/machine_exec_other.go
+@@ -0,0 +1,9 @@
++//go:build !windows
++
++package internal
++
++import "os/exec"
++
++func runMachineExec(cmd *exec.Cmd) error {
++	return cmd.Run()
++}
+diff --git a/host/internal/machine_exec_windows.go b/host/internal/machine_exec_windows.go
+new file mode 100644
+index 0000000..7162eca
+--- /dev/null
++++ b/host/internal/machine_exec_windows.go
+@@ -0,0 +1,38 @@
++//go:build windows
++
++package internal
++
++import (
++	"os/exec"
++	"syscall"
++
++	"golang.org/x/sys/windows"
++)
++
++func runMachineExec(cmd *exec.Cmd) error {
++	if err := cmd.Start(); err != nil {
++		return err
++	}
++
++	process, err := windows.OpenProcess(
++		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_INFORMATION,
++		false,
++		uint32(cmd.Process.Pid),
++	)
++	if err != nil {
++		_ = cmd.Process.Kill()
++		_ = cmd.Wait()
++		return err
++	}
++	defer windows.CloseHandle(process)
++
++	job, err := createJobObject(syscall.Handle(process))
++	if err != nil {
++		_ = cmd.Process.Kill()
++		_ = cmd.Wait()
++		return err
++	}
++	defer syscall.CloseHandle(job)
++
++	return cmd.Wait()
++}
+diff --git a/host/internal/machine_mode_test.go b/host/internal/machine_mode_test.go
+new file mode 100644
+index 0000000..bc47b63
+--- /dev/null
++++ b/host/internal/machine_mode_test.go
+@@ -0,0 +1,53 @@
++package internal
++
++import (
++	"context"
++	"io"
++	"log/slog"
++	"testing"
++)
++
++func TestIsLoopbackDestination(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name string
++		host string
++		want bool
++	}{
++		{name: "IPv4", host: "127.0.0.1", want: true},
++		{name: "IPv4 range", host: "127.42.0.9", want: true},
++		{name: "IPv6", host: "::1", want: true},
++		{name: "localhost", host: "localhost", want: true},
++		{name: "localhost case and dot", host: "LOCALHOST.", want: true},
++		{name: "unspecified IPv4", host: "0.0.0.0", want: false},
++		{name: "unspecified IPv6", host: "::", want: false},
++		{name: "private network", host: "192.168.1.1", want: false},
++		{name: "arbitrary hostname", host: "example.com", want: false},
++		{name: "localhost suffix", host: "localhost.example.com", want: false},
++	}
++
++	for _, tt := range tests {
++		tt := tt
++		t.Run(tt.name, func(t *testing.T) {
++			t.Parallel()
++			if got := isLoopbackDestination(tt.host); got != tt.want {
++				t.Fatalf("isLoopbackDestination(%q) = %v, want %v", tt.host, got, tt.want)
++			}
++		})
++	}
++}
++
++func TestMachineModeRequiresAuthorizedKey(t *testing.T) {
++	t.Parallel()
++
++	server := Server{
++		MachineMode:  true,
++		MachineShell: []string{"cmd.exe"},
++		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
++	}
++	err := server.ServeWithContext(context.Background(), nil)
++	if err == nil || err.Error() != "machine mode requires at least one authorized public key" {
++		t.Fatalf("ServeWithContext() error = %v", err)
++	}
++}
+diff --git a/host/internal/server.go b/host/internal/server.go
+index 81fd6d6..849a8be 100644
+--- a/host/internal/server.go
++++ b/host/internal/server.go
+@@ -8,6 +8,8 @@ import (
+ 	"net"
+ 	"os"
+ 	"os/exec"
++	"runtime"
++	"strings"
+ 	"time"
+ 
+ 	gssh "github.com/charmbracelet/ssh"
+@@ -36,6 +38,8 @@ type Server struct {
+ 	Logger                  *slog.Logger
+ 	ReadOnly                bool
+ 	AllowLocalTCPForwarding bool
++	MachineMode             bool
++	MachineShell            []string
+ 	// ForceForwardingInputForTesting forces stdin forwarding even when stdin is not a TTY.
+ 	// This is used in tests where stdin is a pipe but we still want to forward test data.
+ 	ForceForwardingInputForTesting bool
+@@ -46,27 +50,43 @@ type Server struct {
+ }
+ 
+ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
++	if s.MachineMode {
++		if len(s.AuthorizedKeys) == 0 {
++			return fmt.Errorf("machine mode requires at least one authorized public key")
++		}
++		if len(s.MachineShell) == 0 || strings.TrimSpace(s.MachineShell[0]) == "" {
++			return fmt.Errorf("machine mode requires a shell")
++		}
++	}
++
+ 	writers := uio.NewMultiWriter(5)
+ 
+-	cmdCtx, cmdCancel := context.WithCancel(ctx)
+-	defer cmdCancel()
+-	cmd := newCommand(
+-		s.Command[0],
+-		s.Command[1:],
+-		s.CommandEnv,
+-		s.Stdin,
+-		s.Stdout,
+-		s.EventEmitter,
+-		writers,
+-		s.ForceForwardingInputForTesting,
+-	)
+-	ptmx, err := cmd.Start(cmdCtx)
+-	if err != nil {
+-		return fmt.Errorf("error starting command: %w", err)
++	var ptmx PTY
++	var cmdCancel context.CancelFunc
++	var cmd *command
++	if !s.MachineMode {
++		cmdCtx, cancel := context.WithCancel(ctx)
++		cmdCancel = cancel
++		defer cmdCancel()
++		cmd = newCommand(
++			s.Command[0],
++			s.Command[1:],
++			s.CommandEnv,
++			s.Stdin,
++			s.Stdout,
++			s.EventEmitter,
++			writers,
++			s.ForceForwardingInputForTesting,
++		)
++		var err error
++		ptmx, err = cmd.Start(cmdCtx)
++		if err != nil {
++			return fmt.Errorf("error starting command: %w", err)
++		}
+ 	}
+ 
+ 	var g run.Group
+-	{
++	if !s.MachineMode {
+ 		ctx, cancel := context.WithCancel(ctx)
+ 		teh := terminalEventHandler{
+ 			eventEmitter: s.EventEmitter,
+@@ -78,7 +98,7 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+ 			cancel()
+ 		})
+ 	}
+-	{
++	if !s.MachineMode {
+ 		g.Add(func() error {
+ 			return cmd.Run()
+ 		}, func(err error) {
+@@ -97,6 +117,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+ 			logger:                s.Logger,
+ 			readonly:              s.ReadOnly,
+ 			sftpPermissionChecker: s.SFTPPermissionChecker,
++			machineMode:           s.MachineMode,
++			machineShell:          s.MachineShell,
+ 		}
+ 		ph := publicKeyHandler{
+ 			AuthorizedKeys: s.AuthorizedKeys,
+@@ -130,7 +152,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+ 					"user", ctx.User(),
+ 					"session-id", ctx.SessionID(),
+ 				}
+-				if !s.AllowLocalTCPForwarding {
++				if !s.AllowLocalTCPForwarding ||
++					(s.MachineMode && !isLoopbackDestination(destinationHost)) {
+ 					s.Logger.Warn("rejecting local port forwarding", logArgs...)
+ 					return false
+ 				}
+@@ -204,6 +227,8 @@ type sessionHandler struct {
+ 
+ 	// SFTP configuration
+ 	sftpPermissionChecker sftp.PermissionChecker // Optional: prompts user for SFTP permissions
++	machineMode           bool
++	machineShell          []string
+ }
+ 
+ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+@@ -211,9 +236,14 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+ 	defer emitClientLeftEvent(h.eventEmmiter, sessionID)
+ 
+ 	ptyReq, winCh, isPty := sess.Pty()
++	if h.machineMode && len(sess.Command()) > 0 {
++		h.handleMachineExec(sess)
++		return
++	}
+ 	if !isPty {
+ 		_, _ = io.WriteString(sess, "PTY is required.\n")
+ 		_ = sess.Exit(1)
++		return
+ 	}
+ 
+ 	var (
+@@ -244,11 +274,15 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+ 		})
+ 	}
+ 
+-	if len(h.forceCommand) > 0 {
++	forceCommand := h.forceCommand
++	if h.machineMode {
++		forceCommand = h.machineShell
++	}
++	if len(forceCommand) > 0 {
+ 		ctx, cancel := context.WithCancel(h.ctx)
+ 		defer cancel()
+ 
+-		ptmx, err = startAttachCmd(ctx, h.forceCommand, ptyReq.Term)
++		ptmx, err = startAttachCmd(ctx, forceCommand, ptyReq.Term)
+ 		if err != nil {
+ 			h.logger.Error("error starting force command", "error", err)
+ 			_ = sess.Exit(1)
+@@ -333,6 +367,43 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+ 	}
+ }
+ 
++func (h *sessionHandler) handleMachineExec(sess gssh.Session) {
++	ctx, cancel := context.WithCancel(h.ctx)
++	defer cancel()
++
++	rawCommand := sess.RawCommand()
++	var cmd *exec.Cmd
++	if runtime.GOOS == "windows" {
++		cmd = exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", rawCommand)
++	} else {
++		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", rawCommand)
++	}
++	cmd.Stdin = sess
++	cmd.Stdout = sess
++	cmd.Stderr = sess.Stderr()
++
++	err := runMachineExec(cmd)
++	if exitError, ok := err.(*exec.ExitError); ok {
++		_ = sess.Exit(exitError.ExitCode())
++		return
++	}
++	if err != nil {
++		h.logger.Error("machine-mode exec failed", "error", err)
++		_ = sess.Exit(1)
++		return
++	}
++	_ = sess.Exit(0)
++}
++
++func isLoopbackDestination(host string) bool {
++	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
++	if host == "localhost" {
++		return true
++	}
++	ip := net.ParseIP(host)
++	return ip != nil && ip.IsLoopback()
++}
++
+ func emitClientJoinEvent(eventEmmiter *emitter.Emitter, sessionID string, auth *server.AuthRequest, pk ssh.PublicKey) {
+ 	c := &api.Client{
+ 		Id:                   sessionID,
+diff --git a/host/signer.go b/host/signer.go
+index e97b128..f0c1bf1 100644
+--- a/host/signer.go
++++ b/host/signer.go
+@@ -50,6 +50,12 @@ func Signers(privateKeys []string) ([]ssh.Signer, func(), error) {
+ 	return signers, cleanup, err
+ }
+ 
++// EphemeralSigners creates a new in-memory identity without consulting private
++// key files or an SSH agent.
++func EphemeralSigners() ([]ssh.Signer, error) {
++	return utils.CreateSigners(nil)
++}
++
+ func SignersFromFiles(privateKeys []string) ([]ssh.Signer, error) {
+ 	var signers []ssh.Signer
+ 	for _, file := range privateKeys {
