@@ -75,5 +75,7 @@ Windows integration tests must cover ConPTY resize, concurrent channels, SFTP,
 `scp`, loopback forwarding, and job-object cleanup.
 
 Relay and product claims require separate end-to-end evidence on a
-NAT-restricted Windows host, then on GFN. A local unit or integration test is
-not evidence that VS Code Remote SSH or GFN support is complete.
+NAT-restricted Windows host, then on GFN. The public-relay probe has now passed
+from an actual GFN VM, proving that outbound reverse-tunnel transport works
+without an inbound port. A pinned self-hosted relay deployment remains a
+separate production gate.

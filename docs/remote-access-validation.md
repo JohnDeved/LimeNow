@@ -113,8 +113,20 @@ The pinned prototype currently passes a loopback self-hosted-relay test for:
 - prompt termination of an active command after the local OpenSSH process is
   forcibly terminated.
 
-This proves gates 1-8 on the current Windows machine. It does not yet prove a
-NAT-restricted host, VS Code, or GFN.
+The same binary was then run inside the actual GFN VM
+(`GEFORCE-NOW\kiosk` on computer `GEFORCE-NOW`) against the public
+`ssh://uptermd.upterm.dev:22` relay. A second OpenSSH client reached the
+session-scoped address through that relay, executed
+`echo LIMESSH_PUBLIC_RELAY_OK`, and returned exit code 0. This proves the
+outbound-tunnel and relayed SSH transport from GFN; the machine does not need
+an inbound port.
+
+Together these results prove gates 1-9 and the GFN execution portion of gate
+12. A deployment of the pinned self-hosted relay remains necessary to close
+gate 10. VS Code Remote SSH is deferred: the GFN image blocks legacy Windows
+PowerShell, which the current Microsoft bootstrap invokes even when PowerShell
+7 is available. That limitation does not affect normal OpenSSH shell, exec,
+SFTP, SCP, or forwarding clients.
 
 ## Completed independent work
 
