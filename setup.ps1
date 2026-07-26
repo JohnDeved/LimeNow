@@ -25,6 +25,15 @@ $terminalRoot = Join-Path $limeNowAppsRoot 'WindowsTerminal'
 $terminalVersion = '1.24.11911.0'
 $terminalArchiveUrl = 'https://github.com/microsoft/terminal/releases/download/v1.24.11911.0/Microsoft.WindowsTerminal_1.24.11911.0_x64.zip'
 $terminalArchiveHash = '7691efeb71c8dd0b95536c84e366fa4cf809a42c534912f9cefa1056534383bd'
+$limeSshRoot = Join-Path $limeNowAppsRoot 'LimeSSH'
+$limeSshVersion = '0.1.0'
+$limeSshExecutable = Join-Path $limeSshRoot 'LimeSSH.exe'
+$limeSshAssetUrl = 'https://github.com/JohnDeved/LimeNow/releases/download/limessh-v0.1.0/LimeSSH.exe'
+$limeSshAssetHash = '8b203f33c8d87756a054e1d7382456c926f13ec2ccbf5341bd41226cfdd109ec'
+$limeSshLicenseUrl = 'https://github.com/JohnDeved/LimeNow/releases/download/limessh-v0.1.0/UPTERM-APACHE-2.0-LICENSE'
+$limeSshLicenseHash = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
+$limeSshManager = Join-Path $limeSshRoot 'remote-access.ps1'
+$limeSshManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/remote-access.ps1'
 $modrinthRoot = 'I:\Apps\ModrinthApp'
 $modrinthDataRoot = 'I:\Apps\ModrinthData'
 $modrinthAppData = Join-Path $env:APPDATA 'ModrinthApp'
@@ -595,6 +604,160 @@ function Ensure-DeveloperDesktopShortcuts {
     Write-SetupLog 'Verified persistent Visual Studio Code and Windows Terminal desktop shortcuts.'
 }
 
+function Test-LimeSshInstall {
+    $licensePath = Join-Path $limeSshRoot 'UPTERM-APACHE-2.0-LICENSE'
+    $buildInfoPath = Join-Path $limeSshRoot 'LIMESSH-BUILD.txt'
+    if (-not (Test-Path -LiteralPath $limeSshExecutable) -or
+        -not (Test-Path -LiteralPath $licensePath) -or
+        -not (Test-Path -LiteralPath $buildInfoPath)) {
+        return $false
+    }
+    $binaryHash = (Get-FileHash -LiteralPath $limeSshExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $licenseHash = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw
+    return $binaryHash -eq $limeSshAssetHash -and
+        $licenseHash -eq $limeSshLicenseHash -and
+        $buildInfo -match "LimeSSH $([regex]::Escape($limeSshVersion))"
+}
+
+function Repair-LimeSsh {
+    if (Test-LimeSshInstall) {
+        Write-SetupLog "Verified pinned LimeSSH $limeSshVersion preview."
+        return
+    }
+
+    if (Test-Path -LiteralPath $limeSshManager) {
+        try {
+            & $limeSshManager -Action Stop -InstallRoot $limeSshRoot
+        }
+        catch {
+            Write-SetupLog "WARNING: Unable to stop the old LimeSSH process before repair: $($_.Exception.Message)"
+        }
+    }
+
+    Write-SetupLog "LimeSSH is missing or incomplete; installing pinned preview $limeSshVersion."
+    $repairRoot = Join-Path $setupRoot ('limessh-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $downloadedBinary = Join-Path $repairRoot 'LimeSSH.exe'
+        $downloadedLicense = Join-Path $repairRoot 'UPTERM-APACHE-2.0-LICENSE'
+        Get-VerifiedDownload `
+            -Uri $limeSshAssetUrl `
+            -Destination $downloadedBinary `
+            -ExpectedHash $limeSshAssetHash
+        Get-VerifiedDownload `
+            -Uri $limeSshLicenseUrl `
+            -Destination $downloadedLicense `
+            -ExpectedHash $limeSshLicenseHash
+
+        New-Item -ItemType Directory -Path $limeSshRoot -Force | Out-Null
+        Copy-Item -LiteralPath $downloadedBinary -Destination $limeSshExecutable -Force
+        Copy-Item `
+            -LiteralPath $downloadedLicense `
+            -Destination (Join-Path $limeSshRoot 'UPTERM-APACHE-2.0-LICENSE') `
+            -Force
+        @"
+LimeSSH $limeSshVersion
+
+Upstream: https://github.com/owenthereal/upterm
+Upstream commit: 1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9
+Go toolchain: 1.26.5
+LimeSSH SHA-256: $limeSshAssetHash
+License: Apache-2.0 (UPTERM-APACHE-2.0-LICENSE)
+"@ | Set-Content -LiteralPath (Join-Path $limeSshRoot 'LIMESSH-BUILD.txt') -Encoding utf8
+
+        if (-not (Test-LimeSshInstall)) {
+            throw 'LimeSSH verification failed after installation.'
+        }
+        Write-SetupLog "Installed pinned LimeSSH $limeSshVersion preview."
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-LimeSshManager {
+    $localManager = Join-Path (Split-Path -Parent $PSCommandPath) 'remote-access.ps1'
+    $repairRoot = Join-Path $setupRoot ('limessh-manager-repair-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+        $candidate = Join-Path $repairRoot 'remote-access.ps1'
+        if (Test-Path -LiteralPath $localManager) {
+            Copy-Item -LiteralPath $localManager -Destination $candidate
+        }
+        else {
+            Invoke-WebRequest `
+                -Uri $limeSshManagerUrl `
+                -OutFile $candidate `
+                -UseBasicParsing `
+                -TimeoutSec 60
+        }
+
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$parseErrors
+        ) | Out-Null
+        if ($parseErrors.Count) {
+            throw 'The LimeSSH remote-access manager failed PowerShell syntax validation.'
+        }
+        Copy-IfChanged -Source $candidate -Destination $limeSshManager
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Ensure-LimeSshShortcut {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $shell = New-Object -ComObject WScript.Shell
+    $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Source -First 1
+    if (-not $powerShell) {
+        $powerShell = Join-Path $PSHOME 'powershell.exe'
+    }
+    $shortcut = $shell.CreateShortcut((Join-Path $desktop 'LimeSSH Remote Access.lnk'))
+    $shortcut.TargetPath = $powerShell
+    $shortcut.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$limeSshManager`" -Action Configure"
+    $shortcut.WorkingDirectory = $documentsRoot
+    $shortcut.Description = 'Configure and start public-key-only LimeSSH remote access'
+    $shortcut.Save()
+    Write-SetupLog 'Verified the LimeSSH remote-access desktop shortcut.'
+}
+
+function Ensure-LimeSshRemoteAccess {
+    try {
+        Repair-LimeSsh
+        Ensure-LimeSshManager
+        Ensure-LimeSshShortcut
+
+        $configPath = Join-Path $limeSshRoot 'config.json'
+        if ($Startup) {
+            if (Test-Path -LiteralPath $configPath) {
+                & $limeSshManager -Action Start -Startup -InstallRoot $limeSshRoot
+            }
+            return
+        }
+
+        if (-not (Test-Path -LiteralPath $configPath)) {
+            Write-Host ''
+            Write-Host 'Remote development (preview)' -ForegroundColor Cyan
+            Write-Host 'LimeSSH can expose this GFN session through public-key-only SSH.'
+            $enable = Read-Host 'Enable remote access now? [y/N]'
+            if ($enable -match '^(?i:y|yes)$') {
+                & $limeSshManager -Action Configure -InstallRoot $limeSshRoot
+            }
+        }
+        else {
+            & $limeSshManager -Action Start -InstallRoot $limeSshRoot
+        }
+    }
+    catch {
+        Write-SetupLog "WARNING: LimeSSH preview setup failed without blocking LimeNow: $($_.Exception.Message)"
+    }
+}
+
 function Get-LimeNowModrinthAsset {
     $headers = @{
         Accept = 'application/vnd.github+json'
@@ -830,6 +993,7 @@ try {
     Ensure-DeveloperEnvironment
     Ensure-DeveloperCommandShims
     Ensure-DeveloperDesktopShortcuts
+    Ensure-LimeSshRemoteAccess
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher
     Ensure-ModrinthShortcut

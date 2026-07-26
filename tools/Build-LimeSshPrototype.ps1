@@ -3,6 +3,7 @@ param(
     [string]$UptermCommit = '1a8b11e43b117d4dcfc8d7d92d421cb3f1abbca9',
     [string]$GoVersion = '1.26.5',
     [string]$GoArchiveSha256 = '97e6b2a833b6d89f9ff17d25419ac0a7e3b482a044e9ab18cdef834bd834fd38',
+    [string]$GoArchiveCachePath = (Join-Path $env:LOCALAPPDATA 'LimeNow\BuildCache\go1.26.5.windows-amd64.zip'),
     [string]$OutputPath = (Join-Path $PSScriptRoot '..\artifacts\limessh-prototype.exe'),
     [string]$RelayOutputPath = (Join-Path $PSScriptRoot '..\artifacts\uptermd-prototype.exe')
 )
@@ -27,11 +28,26 @@ try {
     }
 
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-    Invoke-WebRequest `
-        -Uri "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
-        -OutFile $goArchive `
-        -UseBasicParsing `
-        -TimeoutSec 180
+    $cachedGoHash = if (Test-Path -LiteralPath $GoArchiveCachePath) {
+        (Get-FileHash -LiteralPath $GoArchiveCachePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    if ($cachedGoHash -ne $GoArchiveSha256.ToLowerInvariant()) {
+        $cacheDirectory = Split-Path -Parent $GoArchiveCachePath
+        New-Item -ItemType Directory -Path $cacheDirectory -Force | Out-Null
+        $cacheDownload = "$GoArchiveCachePath.download"
+        Invoke-WebRequest `
+            -Uri "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
+            -OutFile $cacheDownload `
+            -UseBasicParsing `
+            -TimeoutSec 300
+        $downloadHash = (Get-FileHash -LiteralPath $cacheDownload -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($downloadHash -ne $GoArchiveSha256.ToLowerInvariant()) {
+            Remove-Item -LiteralPath $cacheDownload -Force -ErrorAction SilentlyContinue
+            throw "Go archive checksum mismatch. Expected $GoArchiveSha256 but received $downloadHash."
+        }
+        Move-Item -LiteralPath $cacheDownload -Destination $GoArchiveCachePath -Force
+    }
+    Copy-Item -LiteralPath $GoArchiveCachePath -Destination $goArchive
     $actualGoHash = (Get-FileHash -LiteralPath $goArchive -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualGoHash -ne $GoArchiveSha256.ToLowerInvariant()) {
         throw "Go archive checksum mismatch. Expected $GoArchiveSha256 but received $actualGoHash."
@@ -74,20 +90,20 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'LimeSSH machine-mode unit tests failed.'
         }
-        & $go test ./host/internal ./host ./cmd/upterm/command -run '^$'
+        & $go test ./host/internal ./host ./cmd/upterm/command ./server -run '^$'
         if ($LASTEXITCODE -ne 0) {
             throw 'LimeSSH packages failed to compile.'
         }
 
         $resolvedOutput = [IO.Path]::GetFullPath($OutputPath)
         New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedOutput) -Force | Out-Null
-        & $go build -trimpath -o $resolvedOutput ./cmd/upterm
+        & $go build -trimpath -buildvcs=false -o $resolvedOutput ./cmd/upterm
         if ($LASTEXITCODE -ne 0) {
             throw 'LimeSSH prototype build failed.'
         }
         $resolvedRelayOutput = [IO.Path]::GetFullPath($RelayOutputPath)
         New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedRelayOutput) -Force | Out-Null
-        & $go build -trimpath -o $resolvedRelayOutput ./cmd/uptermd
+        & $go build -trimpath -buildvcs=false -o $resolvedRelayOutput ./cmd/uptermd
         if ($LASTEXITCODE -ne 0) {
             throw 'Pinned uptermd prototype build failed.'
         }

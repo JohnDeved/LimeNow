@@ -39,6 +39,25 @@ authentication on GeForce NOW machines.
 Codex and GitHub CLI deliberately remain on your local computer. LimeNow does
 not install them in GeForce NOW or store their credentials.
 
+### Remote development preview
+
+LimeNow includes an opt-in LimeSSH preview for normal OpenSSH clients. It runs
+as the current GFN user, creates an outbound reverse tunnel, and authorizes only
+the public keys published by a configured GitHub username or a public key pasted
+from the user's personal computer. No private SSH key, OAuth token, Windows
+service, administrator right, or inbound port is required.
+
+On first setup, LimeNow offers to configure remote access. It can also be
+configured later from the **LimeSSH Remote Access** desktop shortcut. Every
+session receives a new relay address. LimeNow copies a host-key-safe `ssh`
+command to the clipboard and writes SSH, SCP, SFTP, and optional config examples
+to **LimeSSH Connection.txt** on the desktop.
+
+This is a preview, not a production support claim. It currently defaults to the
+public Upterm community relay so the GFN transport can be exercised. A pinned
+self-hosted LimeNow relay remains required before production use. VS Code Remote
+SSH is not documented as supported.
+
 ### Minecraft
 
 - installs or repairs a portable Modrinth App compatibility build under `I:\Apps`;
@@ -106,10 +125,14 @@ compatibility build, not an official Modrinth release.
 - Git for Windows: `I:\Apps\LimeNow\Git`
 - Visual Studio Code and portable data: `I:\Apps\LimeNow\VSCode`
 - Windows Terminal and portable settings: `I:\Apps\LimeNow\WindowsTerminal`
+- LimeSSH binary, public enrollment configuration, relay host key, license, and
+  provenance: `I:\Apps\LimeNow\LimeSSH`
 - Modrinth App: `I:\Apps\ModrinthApp`
 - Modrinth data: `I:\Apps\ModrinthData`
 - SalsaNOW extension hook: `I:\Apps\SalsaNOW\StartupBatch.bat`
 - Repair log: `I:\Apps\SalsaNOW\EasySetup\setup.log`
+- Current LimeSSH session state and authorized public keys:
+  `%LOCALAPPDATA%\LimeNow\RemoteAccess`
 
 ## Relationship to SalsaNOW
 

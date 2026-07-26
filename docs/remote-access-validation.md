@@ -91,9 +91,10 @@ Run the prototype as an ordinary Windows foreground process and prove:
 11. VS Code Remote SSH works with the remote platform set to Windows;
 12. the prototype passes inside an actual GFN session.
 
-Only after gates 1-12 pass may LimeNow integrate GitHub public-key enrollment,
-display the session-scoped SSH command and VS Code configuration, or document
-remote access as supported.
+The normal-OpenSSH path may be integrated behind an explicitly labeled preview
+after its local and GFN relay gates pass. Production support still requires the
+self-hosted relay gate. Gate 11 independently blocks any VS Code Remote SSH
+support claim; the preview must not imply that VS Code is supported.
 
 ## Current prototype evidence
 
@@ -127,6 +128,35 @@ gate 10. VS Code Remote SSH is deferred: the GFN image blocks legacy Windows
 PowerShell, which the current Microsoft bootstrap invokes even when PowerShell
 7 is available. That limitation does not affect normal OpenSSH shell, exec,
 SFTP, SCP, or forwarding clients.
+
+The opt-in LimeNow manager now also passes a loopback-relay product-lifecycle
+test for:
+
+- fetching a GitHub account's published SSH keys into the active authorized-key
+  file;
+- enrolling a directly pasted public key without persisting private material;
+- rejecting an unconfigured client key;
+- emitting a copyable session-specific SSH command with `HostKeyAlias` and
+  `StrictHostKeyChecking accept-new`;
+- emitting SCP/SFTP commands that safely handle relay usernames containing
+  colons;
+- reusing the single managed process on repeated startup;
+- executing through the enrolled key; and
+- revoking access when the managed LimeSSH process stops.
+
+Run this integration gate with:
+
+```powershell
+& .\tools\Test-RemoteAccessManager.ps1
+```
+
+Run the same product lifecycle through the public relay from GFN with:
+
+```powershell
+& .\tools\Test-RemoteAccessManager.ps1 `
+    -Server 'ssh://uptermd.upterm.dev:22' `
+    -SkipGitHubEnrollment
+```
 
 ## Completed independent work
 

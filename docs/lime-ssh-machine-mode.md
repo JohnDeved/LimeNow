@@ -17,9 +17,20 @@ pinned source with:
 ```
 
 The build harness downloads the checksum-pinned Go toolchain into a temporary
-directory, checks out the pinned Upterm commit, verifies and applies the patch,
-runs the focused unit and compile tests, and writes the prototype binary under
-`artifacts`. The end-to-end harness starts the pinned relay on loopback and
+directory (reusing only a checksum-verified archive cache), checks out the
+pinned Upterm commit, verifies and applies the patch, runs the focused unit and
+compile tests, and writes the prototype binary under `artifacts`. VCS metadata
+embedding is disabled and two independent builds produced the same SHA-256:
+
+```text
+8b203f33c8d87756a054e1d7382456c926f13ec2ccbf5341bd41226cfdd109ec
+```
+
+`.github/workflows/build-limessh.yml` repeats that build on a Windows runner,
+fails on any hash mismatch, and publishes the binaries, Apache-2.0 license,
+provenance, and checksums as a prerelease after the workflow reaches `main`.
+
+The end-to-end harness starts the pinned relay on loopback and
 validates public-key authentication, interactive ConPTY, independent and
 concurrent exec, exit status 7, SFTP, current `scp`, loopback forwarding,
 to both `127.0.0.1` and `::1`, non-loopback rejection, and job cleanup after
@@ -79,3 +90,22 @@ NAT-restricted Windows host, then on GFN. The public-relay probe has now passed
 from an actual GFN VM, proving that outbound reverse-tunnel transport works
 without an inbound port. A pinned self-hosted relay deployment remains a
 separate production gate.
+
+## LimeNow preview integration
+
+`remote-access.ps1` implements the opt-in product lifecycle:
+
+- enroll public keys from a GitHub username or a pasted public key;
+- persist only public enrollment data and the relay URL;
+- regenerate the active `authorized_keys` file on session-local storage;
+- start at most one LimeSSH process during SalsaNOW startup;
+- publish SSH, SCP, SFTP, and config examples with a session-specific
+  `HostKeyAlias` and `StrictHostKeyChecking accept-new`;
+- stop the managed process and revoke the relay session.
+
+`setup.ps1` installs only the checksum-pinned prerelease binary and matching
+Apache-2.0 license, offers first-run enrollment, creates the desktop manager
+shortcut, and restarts an enabled session from SalsaNOW's existing startup
+hook. The community relay is a preview default; the server URL is stored in
+configuration so the production self-hosted endpoint can replace it without a
+client design change.
