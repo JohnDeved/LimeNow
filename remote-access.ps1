@@ -37,6 +37,23 @@ function Initialize-RemoteAccessStorage {
     New-Item -ItemType Directory -Path $InstallRoot, $StateRoot -Force | Out-Null
 }
 
+function Get-StartupMutexName {
+    $identity = '{0}|{1}' -f (
+        [IO.Path]::GetFullPath($StateRoot)
+    ).ToLowerInvariant(), (
+        [IO.Path]::GetFullPath($LimeSshPath)
+    ).ToLowerInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity))
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $suffix = ([BitConverter]::ToString($hash)).Replace('-', '').Substring(0, 24)
+    return "Local\LimeNowRemoteAccessStartup-$suffix"
+}
+
 function Write-RemoteAccessLog {
     param([Parameter(Mandatory)][string]$Message)
 
@@ -328,7 +345,7 @@ function Stop-LimeSsh {
     Remove-Item -LiteralPath $statusPath, $connectionPath -Force -ErrorAction SilentlyContinue
 }
 
-function Start-LimeSsh {
+function Start-LimeSshCore {
     $config = Read-RemoteAccessConfig
     if (-not $config -or -not $config.Enabled) {
         Write-RemoteAccessLog 'Remote access is not configured or is disabled.'
@@ -424,6 +441,29 @@ function Start-LimeSsh {
             $process.WaitForExit(5000) | Out-Null
         }
         throw
+    }
+}
+
+function Start-LimeSsh {
+    $mutex = [Threading.Mutex]::new($false, (Get-StartupMutexName))
+    $ownsMutex = $false
+    try {
+        try {
+            $ownsMutex = $mutex.WaitOne([TimeSpan]::FromSeconds(60))
+        }
+        catch [Threading.AbandonedMutexException] {
+            $ownsMutex = $true
+        }
+        if (-not $ownsMutex) {
+            throw 'Timed out waiting for another LimeSSH startup to finish.'
+        }
+        return Start-LimeSshCore
+    }
+    finally {
+        if ($ownsMutex) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
     }
 }
 
@@ -541,9 +581,6 @@ function Configure-LimeSsh {
             $prompt += " [$defaultUser]"
         }
         $configuredGitHubUser = Read-Host "$prompt (leave blank to paste a public key)"
-        if (-not $configuredGitHubUser -and $defaultUser) {
-            $configuredGitHubUser = $defaultUser
-        }
         if (-not $configuredGitHubUser) {
             $pastedKey = Read-Host 'Paste your personal PC SSH public key (leave blank to disable)'
             if ($pastedKey) {

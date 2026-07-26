@@ -236,6 +236,36 @@ exit /b 7
         throw 'Refreshed authentication state was not synchronized after Codex exited.'
     }
 
+    $fakeConfigDelete = Join-Path $testRoot 'fake-codex-config-delete.cmd'
+    @'
+@echo off
+del /q "%CODEX_HOME%\config.toml"
+del /q "%CODEX_HOME%\review.config.toml"
+exit /b 0
+'@ | Set-Content -LiteralPath $fakeConfigDelete -Encoding utf8
+    $configDeleteExit = Invoke-StateScript `
+        -Action Run `
+        -SessionHome $replacementHome `
+        -CodexCommand $fakeConfigDelete `
+        -Arguments @('exec')
+    if ($configDeleteExit -ne 0) {
+        throw "The managed config-deletion run failed (received $configDeleteExit)."
+    }
+    foreach ($relativePath in @('config\config.toml', 'config\review.config.toml')) {
+        if (Test-Path -LiteralPath (Join-Path $persistentRoot $relativePath) -PathType Leaf) {
+            throw "Deleted Codex configuration remained persistent: $relativePath"
+        }
+    }
+    $postDeletionHome = Join-Path $testRoot 'post-deletion-home'
+    if ((Invoke-StateScript -Action Initialize -SessionHome $postDeletionHome) -ne 0) {
+        throw 'Post-deletion replacement-machine initialization failed.'
+    }
+    foreach ($name in @('config.toml', 'review.config.toml')) {
+        if (Test-Path -LiteralPath (Join-Path $postDeletionHome $name) -PathType Leaf) {
+            throw "Deleted Codex configuration was restored on a replacement machine: $name"
+        }
+    }
+
     $fakeLogout = Join-Path $testRoot 'fake-codex-logout.cmd'
     @'
 @echo off
@@ -261,7 +291,7 @@ exit /b 0
         throw 'Codex credential or session content appeared in launcher diagnostics.'
     }
 
-    Write-Output 'Codex persistence test passed: SetupIntegration, ActiveSessionSnapshot, DeferredLinkSafety, SnapshotWatcher, AtomicSnapshotPromotion, UpgradeAclRecovery, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, LogoutPropagation, RedactedDiagnostics'
+    Write-Output 'Codex persistence test passed: SetupIntegration, ActiveSessionSnapshot, DeferredLinkSafety, SnapshotWatcher, AtomicSnapshotPromotion, UpgradeAclRecovery, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, ConfigDeletionPropagation, LogoutPropagation, RedactedDiagnostics'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

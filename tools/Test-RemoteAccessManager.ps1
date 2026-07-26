@@ -101,6 +101,32 @@ try {
             throw 'GitHub public-key enrollment did not populate the authorized-key file.'
         }
         & $manager -Action Stop @managerArguments
+
+        $testPublicKey = $publicKey
+        $interactiveResponses = [Collections.Generic.Queue[string]]::new()
+        $interactiveResponses.Enqueue('')
+        $interactiveResponses.Enqueue($testPublicKey)
+        function Read-Host {
+            param([string]$Prompt)
+            if ($interactiveResponses.Count -eq 0) {
+                throw "Unexpected interactive prompt: $Prompt"
+            }
+            return $interactiveResponses.Dequeue()
+        }
+        try {
+            [void](. $manager -Action Configure -Server $serverAddress @managerArguments)
+        }
+        finally {
+            Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue
+            $publicKey = $testPublicKey
+        }
+        $switchedConfig = Get-Content -LiteralPath (Join-Path $installRoot 'config.json') -Raw |
+            ConvertFrom-Json
+        if ($switchedConfig.GitHubUser -or
+            @($switchedConfig.PublicKeys) -notcontains $testPublicKey) {
+            throw 'Blank interactive enrollment did not switch from GitHub to the pasted key.'
+        }
+        & $manager -Action Stop @managerArguments
     }
 
     $result = & $manager `
@@ -140,6 +166,65 @@ try {
         $connectionText -notmatch 'limessh_known_hosts_%C') {
         throw 'The manager did not write copyable connection details.'
     }
+
+    & $manager -Action Stop @managerArguments
+    $powerShellPath = (Get-Process -Id $PID).Path
+    $startArguments = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $manager,
+        '-Action',
+        'Start',
+        '-InstallRoot',
+        $installRoot,
+        '-StateRoot',
+        $stateRoot,
+        '-LimeSshPath',
+        $isolatedLimeSshPath,
+        '-ConnectionPath',
+        $connectionPath
+    )
+    $startProcesses = @(
+        Start-Process `
+            -FilePath $powerShellPath `
+            -ArgumentList $startArguments `
+            -RedirectStandardOutput (Join-Path $testRoot 'concurrent-start-1.out') `
+            -RedirectStandardError (Join-Path $testRoot 'concurrent-start-1.err') `
+            -PassThru `
+            -WindowStyle Hidden
+        Start-Process `
+            -FilePath $powerShellPath `
+            -ArgumentList $startArguments `
+            -RedirectStandardOutput (Join-Path $testRoot 'concurrent-start-2.out') `
+            -RedirectStandardError (Join-Path $testRoot 'concurrent-start-2.err') `
+            -PassThru `
+            -WindowStyle Hidden
+    )
+    foreach ($startProcess in $startProcesses) {
+        if (-not $startProcess.WaitForExit(60000) -or $startProcess.ExitCode -ne 0) {
+            throw 'A concurrent manager Start invocation failed.'
+        }
+    }
+    $status = Get-Content -LiteralPath (Join-Path $stateRoot 'session.json') -Raw |
+        ConvertFrom-Json
+    $isolatedPath = [IO.Path]::GetFullPath($isolatedLimeSshPath)
+    $managedProcesses = @(
+        Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($isolatedLimeSshPath)) |
+            Where-Object {
+                [IO.Path]::GetFullPath($_.Path).Equals(
+                    $isolatedPath,
+                    [StringComparison]::OrdinalIgnoreCase
+                )
+            }
+    )
+    if ($managedProcesses.Count -ne 1 -or $managedProcesses[0].Id -ne $status.ProcessId) {
+        throw 'Concurrent manager starts did not converge on one advertised LimeSSH process.'
+    }
+
     $repeatResult = & $manager -Action Start @managerArguments
     $repeatStatus = $repeatResult |
         Where-Object { $_.PSObject.Properties.Name -contains 'SshCommand' } |
@@ -241,6 +326,8 @@ try {
         RefreshAction = 'passed'
         RetryAction = 'passed'
         SingleProcess = 'passed'
+        ConcurrentStart = 'passed'
+        InteractiveEnrollmentSwitch = if ($SkipGitHubEnrollment) { 'skipped' } else { 'passed' }
         AuthorizedKey = 'passed'
         RejectedKey = 'passed'
         ScpTemplate = 'passed'

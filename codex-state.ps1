@@ -313,6 +313,7 @@ function Initialize-StateLayout {
 function Sync-CodexState {
     param(
         [switch]$RemoveMissingAuth,
+        [switch]$RemoveMissingConfig,
         [switch]$BestEffort
     )
 
@@ -333,17 +334,35 @@ function Sync-CodexState {
             }
         }
     }
-    try {
-        Copy-FileIfDifferent `
-            -Source (Join-Path $SessionCodexHome 'config.toml') `
-            -Destination $layout.ConfigFile
-    }
-    catch {
-        if (-not $BestEffort) {
-            throw
+    $localConfig = Join-Path $SessionCodexHome 'config.toml'
+    if ($RemoveMissingConfig -and
+        -not (Test-Path -LiteralPath $localConfig -PathType Leaf) -and
+        (Test-Path -LiteralPath $layout.ConfigFile -PathType Leaf)) {
+        try {
+            Remove-Item -LiteralPath $layout.ConfigFile -Force
+        }
+        catch {
+            if (-not $BestEffort) {
+                throw
+            }
         }
     }
-    foreach ($profile in Get-ChildItem -LiteralPath $SessionCodexHome -Filter '*.config.toml' -File -Force) {
+    else {
+        try {
+            Copy-FileIfDifferent `
+                -Source $localConfig `
+                -Destination $layout.ConfigFile
+        }
+        catch {
+            if (-not $BestEffort) {
+                throw
+            }
+        }
+    }
+    $localProfiles = @(
+        Get-ChildItem -LiteralPath $SessionCodexHome -Filter '*.config.toml' -File -Force
+    )
+    foreach ($profile in $localProfiles) {
         try {
             Copy-FileIfDifferent `
                 -Source $profile.FullName `
@@ -352,6 +371,26 @@ function Sync-CodexState {
         catch {
             if (-not $BestEffort) {
                 throw
+            }
+        }
+    }
+    if ($RemoveMissingConfig) {
+        $localProfileNames = @($localProfiles.Name)
+        foreach ($persistentProfile in Get-ChildItem `
+            -LiteralPath $layout.ConfigRoot `
+            -Filter '*.config.toml' `
+            -File `
+            -Force) {
+            if ($localProfileNames -contains $persistentProfile.Name) {
+                continue
+            }
+            try {
+                Remove-Item -LiteralPath $persistentProfile.FullName -Force
+            }
+            catch {
+                if (-not $BestEffort) {
+                    throw
+                }
             }
         }
     }
@@ -546,7 +585,7 @@ switch ($Action) {
     'Sync' {
         $deferSessionLinks = Test-ShouldDeferSessionLinks
         $linksReady = Initialize-CodexState -DeferSessionLinks:$deferSessionLinks
-        Sync-CodexState
+        Sync-CodexState -RemoveMissingConfig
         if (-not $linksReady) {
             Copy-CodexSessionSnapshots
         }
@@ -571,7 +610,9 @@ switch ($Action) {
             $successfulLogout = $codexExitCode -eq 0 -and
                 $CodexArguments.Count -gt 0 -and
                 $CodexArguments[0] -eq 'logout'
-            Sync-CodexState -RemoveMissingAuth:$successfulLogout
+            Sync-CodexState `
+                -RemoveMissingAuth:$successfulLogout `
+                -RemoveMissingConfig
             if (-not $linksReady) {
                 Copy-CodexSessionSnapshots
             }
