@@ -1,0 +1,140 @@
+name: Build Modrinth GFN compatibility edition
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-modrinth-gfn.yml
+
+permissions:
+  contents: write
+
+env:
+  MODRINTH_VERSION: 0.16.1
+  MODRINTH_REF: v0.16.1
+  RELEASE_TAG: modrinth-gfn-v0.16.1
+  ASSET_NAME: LimeNow-Modrinth-GFN-v0.16.1.zip
+  VITE_STRIPE_PUBLISHABLE_KEY: pk_live_51JbFxJJygY5LJFfKLVVldb10HlLt24p421OWRsTOWc5sXYFOnFUXWieSc6HD3PHo25ktx8db1WcHr36XGFvZFVUz00V9ixrCs5
+
+jobs:
+  build:
+    name: Build Windows portable app
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out the official Modrinth source tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: modrinth/code
+          ref: ${{ env.MODRINTH_REF }}
+          fetch-depth: 1
+          path: modrinth
+
+      - name: Enable Corepack
+        shell: pwsh
+        run: corepack enable
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version-file: modrinth/.nvmrc
+          cache: pnpm
+          cache-dependency-path: modrinth/pnpm-lock.yaml
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
+        with:
+          rustflags: ""
+
+      - name: Apply the GFN trust-store compatibility patch
+        shell: pwsh
+        working-directory: modrinth
+        run: |
+          $cargoPath = "packages/app-lib/Cargo.toml"
+          $cargo = Get-Content -LiteralPath $cargoPath -Raw
+          $oldFeature = '"rustls-tls-webpki-roots",'
+          $newFeature = '"native-tls",'
+          $matches = ([regex]::Matches($cargo, [regex]::Escape($oldFeature))).Count
+          if ($matches -ne 1) {
+            throw "Expected exactly one Modrinth reqwest web-PKI feature; found $matches."
+          }
+          $cargo = $cargo.Replace($oldFeature, $newFeature)
+          Set-Content -LiteralPath $cargoPath -Value $cargo -Encoding utf8 -NoNewline
+
+          Copy-Item -LiteralPath "packages/app-lib/.env.prod" -Destination "packages/app-lib/.env"
+
+          $patched = Get-Content -LiteralPath $cargoPath -Raw
+          if ($patched -notmatch '"native-tls"') {
+            throw "The native TLS patch was not applied."
+          }
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: modrinth
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the portable Modrinth executable
+        shell: pwsh
+        working-directory: modrinth
+        run: pnpm --filter=@modrinth/app run tauri build --no-bundle
+
+      - name: Package provenance, license, and checksum
+        shell: pwsh
+        working-directory: modrinth
+        run: |
+          $executable = "target/release/Modrinth App.exe"
+          if (-not (Test-Path -LiteralPath $executable)) {
+            throw "Modrinth build did not produce $executable"
+          }
+
+          $stage = "target/limenow-package"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -LiteralPath $executable -Destination $stage
+          Copy-Item -LiteralPath "LICENSE" -Destination (Join-Path $stage "MODRINTH-GPL-3.0-LICENSE")
+
+          @"
+          LimeNow Modrinth GFN compatibility edition
+
+          Upstream: https://github.com/modrinth/code
+          Upstream tag: $env:MODRINTH_REF
+          Upstream source: https://github.com/modrinth/code/tree/$env:MODRINTH_REF
+
+          Compatibility change:
+          packages/app-lib/Cargo.toml selects reqwest's native-tls backend instead
+          of rustls-tls-webpki-roots. On Windows this uses the Windows certificate
+          store, allowing Modrinth to validate SalsaNOW/GeForce NOW's trusted NVIDIA
+          HTTPS interception certificate while retaining certificate validation.
+
+          No Modrinth authentication logic is changed. This build is unsigned and
+          is distributed under Modrinth's GPL-3.0 license.
+          "@ | Set-Content -LiteralPath (Join-Path $stage "LIMENOW-BUILD.txt") -Encoding utf8
+
+          $hash = (Get-FileHash -LiteralPath (Join-Path $stage "Modrinth App.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Modrinth App.exe" | Set-Content -LiteralPath (Join-Path $stage "SHA256SUMS") -Encoding ascii
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath (Join-Path "target" $env:ASSET_NAME) -CompressionLevel Optimal
+
+      - name: Publish compatibility release
+        shell: pwsh
+        working-directory: modrinth
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = Join-Path "target" $env:ASSET_NAME
+          $notes = @"
+          Portable Modrinth App $env:MODRINTH_VERSION compatibility build for SalsaNOW/GeForce NOW.
+
+          Built reproducibly from the official Modrinth `$env:MODRINTH_REF` source. The only source
+          compatibility change switches reqwest from bundled web-PKI roots to Windows-native TLS so
+          the app can validate NVIDIA's GFN certificate chain during Microsoft authentication.
+
+          This is an unsigned LimeNow compatibility build, not an official Modrinth release.
+          Source and GPL-3.0 license information are included in the ZIP.
+          "@
+
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Modrinth GFN compatibility $env:MODRINTH_VERSION" --notes $notes
+          }
+          gh release upload $env:RELEASE_TAG $asset --repo $env:GITHUB_REPOSITORY --clobber
