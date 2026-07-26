@@ -20,7 +20,10 @@ The build harness downloads the checksum-pinned Go toolchain into a temporary
 directory, checks out the pinned Upterm commit, verifies and applies the patch,
 runs the focused unit and compile tests, and writes the prototype binary under
 `artifacts`. The end-to-end harness starts the pinned relay on loopback and
-validates public-key authentication, an exec command, exit status 7, and SFTP.
+validates public-key authentication, interactive ConPTY, independent and
+concurrent exec, exit status 7, SFTP, current `scp`, loopback forwarding,
+to both `127.0.0.1` and `::1`, non-loopback rejection, and job cleanup after
+command/channel completion.
 Temporary source, toolchain, keys, and relay state are removed afterward.
 
 ## Behavioral delta from Upterm

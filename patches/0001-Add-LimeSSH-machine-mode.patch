@@ -4,20 +4,21 @@ Date: Sun, 26 Jul 2026 18:09:36 +0200
 Subject: [PATCH] Add LimeSSH machine mode
 
 ---
- cmd/upterm/command/host.go            |  30 ++++++-
+ cmd/upterm/command/host.go            |  40 +++++++-
  host/host.go                          |   4 +
  host/internal/machine_exec_other.go   |   9 ++
  host/internal/machine_exec_windows.go |  38 ++++++++
  host/internal/machine_mode_test.go    |  53 +++++++++++
- host/internal/server.go               | 121 +++++++++++++++++++++-----
+ host/internal/server.go               | 128 ++++++++++++++++++++++----
+ host/internal/sftp.go                 |   6 +-
  host/signer.go                        |   6 ++
- 7 files changed, 238 insertions(+), 23 deletions(-)
+ 8 files changed, 258 insertions(+), 26 deletions(-)
  create mode 100644 host/internal/machine_exec_other.go
  create mode 100644 host/internal/machine_exec_windows.go
  create mode 100644 host/internal/machine_mode_test.go
 
 diff --git a/cmd/upterm/command/host.go b/cmd/upterm/command/host.go
-index 6937def..b6034de 100644
+index 6937def..eede4ca 100644
 --- a/cmd/upterm/command/host.go
 +++ b/cmd/upterm/command/host.go
 @@ -68,6 +68,8 @@ var (
@@ -44,7 +45,7 @@ index 6937def..b6034de 100644
  	cmd.PersistentFlags().BoolVar(&flagNoSFTP, "no-sftp", false, "Disable file transfer via SFTP/SCP. By default, clients can transfer files with the same access as the terminal session.")
  	cmd.PersistentFlags().BoolVar(&flagAllowLocalTCPForwarding, "allow-local-tcp-forwarding", false, "Allow clients to use SSH local TCP forwarding (ssh -L) through the hosted session, reaching TCP destinations visible to the host.")
 +	cmd.PersistentFlags().BoolVar(&flagMachineMode, "machine-mode", false, "Create an independent process for each SSH shell or exec channel.")
-+	cmd.PersistentFlags().StringVar(&flagMachineShell, "machine-shell", "cmd.exe", "Shell executable to start for machine-mode interactive sessions.")
++	cmd.PersistentFlags().StringVar(&flagMachineShell, "machine-shell", "cmd.exe /d /q /k", "Shell command to start for machine-mode interactive sessions.")
  
  	return cmd
  }
@@ -70,7 +71,24 @@ index 6937def..b6034de 100644
  		shellCmd := getDefaultShell()
  		args, err = shlex.Split(shellCmd)
  		if err != nil {
-@@ -250,8 +263,17 @@ func shareRunE(c *cobra.Command, args []string) error {
+@@ -208,6 +221,16 @@ func shareRunE(c *cobra.Command, args []string) error {
+ 			return fmt.Errorf("error parsing command %s: %w", flagForceCommand, err)
+ 		}
+ 	}
++	var machineShell []string
++	if flagMachineMode {
++		machineShell, err = shlex.Split(flagMachineShell)
++		if err != nil {
++			return fmt.Errorf("error parsing machine shell %s: %w", flagMachineShell, err)
++		}
++		if len(machineShell) == 0 {
++			return fmt.Errorf("--machine-shell cannot be empty")
++		}
++	}
+ 
+ 	logger := uptermctx.Logger(c.Context())
+ 	if logger == nil {
+@@ -250,8 +273,17 @@ func shareRunE(c *cobra.Command, args []string) error {
  		}
  		authorizedKeys = append(authorizedKeys, sourceHutUserKeys...)
  	}
@@ -89,14 +107,14 @@ index 6937def..b6034de 100644
  	if err != nil {
  		return fmt.Errorf("error reading private keys: %w", err)
  	}
-@@ -292,7 +314,9 @@ func shareRunE(c *cobra.Command, args []string) error {
+@@ -292,7 +324,9 @@ func shareRunE(c *cobra.Command, args []string) error {
  		Stdout:                  os.Stdout,
  		Logger:                  logger.Logger,
  		ReadOnly:                flagReadOnly,
 -		AllowLocalTCPForwarding: flagAllowLocalTCPForwarding,
 +		AllowLocalTCPForwarding: flagAllowLocalTCPForwarding || flagMachineMode,
 +		MachineMode:             flagMachineMode,
-+		MachineShell:            []string{flagMachineShell},
++		MachineShell:            machineShell,
  		SFTPDisabled:            flagNoSFTP,
  		SFTPPermissionChecker:   sftpPermissionChecker,
  	}
@@ -241,10 +259,17 @@ index 0000000..bc47b63
 +	}
 +}
 diff --git a/host/internal/server.go b/host/internal/server.go
-index 81fd6d6..ef1e781 100644
+index 81fd6d6..9701ba1 100644
 --- a/host/internal/server.go
 +++ b/host/internal/server.go
-@@ -8,6 +8,8 @@ import (
+@@ -2,12 +2,15 @@ package internal
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"log/slog"
  	"net"
  	"os"
  	"os/exec"
@@ -253,7 +278,7 @@ index 81fd6d6..ef1e781 100644
  	"time"
  
  	gssh "github.com/charmbracelet/ssh"
-@@ -36,6 +38,8 @@ type Server struct {
+@@ -36,6 +39,8 @@ type Server struct {
  	Logger                  *slog.Logger
  	ReadOnly                bool
  	AllowLocalTCPForwarding bool
@@ -262,7 +287,7 @@ index 81fd6d6..ef1e781 100644
  	// ForceForwardingInputForTesting forces stdin forwarding even when stdin is not a TTY.
  	// This is used in tests where stdin is a pipe but we still want to forward test data.
  	ForceForwardingInputForTesting bool
-@@ -46,27 +50,43 @@ type Server struct {
+@@ -46,27 +51,43 @@ type Server struct {
  }
  
  func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
@@ -322,7 +347,7 @@ index 81fd6d6..ef1e781 100644
  		ctx, cancel := context.WithCancel(ctx)
  		teh := terminalEventHandler{
  			eventEmitter: s.EventEmitter,
-@@ -78,7 +98,7 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+@@ -78,7 +99,7 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
  			cancel()
  		})
  	}
@@ -331,7 +356,7 @@ index 81fd6d6..ef1e781 100644
  		g.Add(func() error {
  			return cmd.Run()
  		}, func(err error) {
-@@ -97,6 +117,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+@@ -97,6 +118,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
  			logger:                s.Logger,
  			readonly:              s.ReadOnly,
  			sftpPermissionChecker: s.SFTPPermissionChecker,
@@ -340,7 +365,7 @@ index 81fd6d6..ef1e781 100644
  		}
  		ph := publicKeyHandler{
  			AuthorizedKeys: s.AuthorizedKeys,
-@@ -130,7 +152,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
+@@ -130,7 +153,8 @@ func (s *Server) ServeWithContext(ctx context.Context, l net.Listener) error {
  					"user", ctx.User(),
  					"session-id", ctx.SessionID(),
  				}
@@ -350,7 +375,7 @@ index 81fd6d6..ef1e781 100644
  					s.Logger.Warn("rejecting local port forwarding", logArgs...)
  					return false
  				}
-@@ -204,6 +227,8 @@ type sessionHandler struct {
+@@ -204,6 +228,8 @@ type sessionHandler struct {
  
  	// SFTP configuration
  	sftpPermissionChecker sftp.PermissionChecker // Optional: prompts user for SFTP permissions
@@ -359,7 +384,7 @@ index 81fd6d6..ef1e781 100644
  }
  
  func (h *sessionHandler) HandleSession(sess gssh.Session) {
-@@ -211,9 +236,14 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+@@ -211,9 +237,14 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
  	defer emitClientLeftEvent(h.eventEmmiter, sessionID)
  
  	ptyReq, winCh, isPty := sess.Pty()
@@ -374,7 +399,7 @@ index 81fd6d6..ef1e781 100644
  	}
  
  	var (
-@@ -244,11 +274,15 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+@@ -244,13 +275,18 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
  		})
  	}
  
@@ -391,8 +416,11 @@ index 81fd6d6..ef1e781 100644
 +		ptmx, err = startAttachCmd(ctx, forceCommand, ptyReq.Term)
  		if err != nil {
  			h.logger.Error("error starting force command", "error", err)
++			_, _ = fmt.Fprintf(sess.Stderr(), "unable to start shell: %v\n", err)
  			_ = sess.Exit(1)
-@@ -333,6 +367,53 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
+ 			return
+ 		}
+@@ -333,6 +369,58 @@ func (h *sessionHandler) HandleSession(sess gssh.Session) {
  	}
  }
  
@@ -407,6 +435,7 @@ index 81fd6d6..ef1e781 100644
 +	} else {
 +		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", rawCommand)
 +	}
++	cmd.WaitDelay = time.Second
 +	cmd.Stdout = sess
 +	cmd.Stderr = sess.Stderr()
 +
@@ -422,12 +451,16 @@ index 81fd6d6..ef1e781 100644
 +	}()
 +
 +	err = runMachineExec(cmd)
++	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
++		err = nil
++	}
 +	if exitError, ok := err.(*exec.ExitError); ok {
 +		_ = sess.Exit(exitError.ExitCode())
 +		return
 +	}
 +	if err != nil {
 +		h.logger.Error("machine-mode exec failed", "error", err)
++		_, _ = fmt.Fprintf(sess.Stderr(), "unable to execute command: %v\n", err)
 +		_ = sess.Exit(1)
 +		return
 +	}
@@ -446,6 +479,31 @@ index 81fd6d6..ef1e781 100644
  func emitClientJoinEvent(eventEmmiter *emitter.Emitter, sessionID string, auth *server.AuthRequest, pk ssh.PublicKey) {
  	c := &api.Client{
  		Id:                   sessionID,
+diff --git a/host/internal/sftp.go b/host/internal/sftp.go
+index dce88b7..360c202 100644
+--- a/host/internal/sftp.go
++++ b/host/internal/sftp.go
+@@ -18,7 +18,7 @@ import (
+ 
+ // SFTPSession tracks permission state for a single SFTP session
+ type SFTPSession struct {
+-	readOnly          bool                      // Only allow downloads (no upload/delete)
++	readOnly          bool                       // Only allow downloads (no upload/delete)
+ 	permissionChecker hostsftp.PermissionChecker // Optional: prompts user for permission (nil = auto-allow)
+ 	clientInfo        hostsftp.ClientInfo        // Client information for permission dialogs
+ }
+@@ -72,9 +72,9 @@ func (h *sessionHandler) HandleSFTP(sess gssh.Session) {
+ 			h.logger.Error("sftp server error", "error", err)
+ 		}
+ 	}
+-	_ = server.Close()
+-
+ 	h.logger.Info("SFTP session ended")
++	_ = sess.Exit(0)
++	_ = server.Close()
+ }
+ 
+ // checkPermission prompts user for permission if needed.
 diff --git a/host/signer.go b/host/signer.go
 index e97b128..f0c1bf1 100644
 --- a/host/signer.go
