@@ -3,26 +3,47 @@
 **A companion extension for [SalsaNOW](https://github.com/dpadGuy/SalsaNOW).**
 
 LimeNow builds on an existing SalsaNOW installation and automates a few useful
-session customizations: persistent Prism Launcher setup, German QWERTZ, and the
-Windows timezone fix needed for Microsoft authentication on some GeForce NOW
-machines.
+session customizations: a persistent Modrinth App compatibility setup, German
+QWERTZ, and the Windows timezone/certificate fixes needed for Microsoft
+authentication on GeForce NOW machines.
 
 > [!IMPORTANT]
 > LimeNow is not a SalsaNOW replacement, fork, installer, or unlock method.
 > Install and start SalsaNOW first. LimeNow then runs through SalsaNOW's
 > supported `StartupBatch.bat` extension point.
 
-## What the extension adds
+## What LimeNow does
 
-- fixes SalsaNOW's Windows timezone for Microsoft authentication;
+### General fixes & improvements
+
+- fixes SalsaNOW's Windows timezone and NVIDIA proxy-certificate validation;
 - switches the keyboard to German QWERTZ;
-- installs or repairs official portable Prism Launcher under `I:\Apps`;
-- verifies Prism downloads against GitHub's published SHA-256 digest;
-- restores the persistent Prism desktop shortcut;
+- installs a persistent official Node.js LTS build with npm and npx;
+- installs the official OpenAI Codex CLI package through npm;
+- configures Node.js to use the trusted Windows certificate store on GeForce NOW;
+- adds persistent Node.js, npm, npx, and Codex commands to `PATH`;
+- creates a desktop launcher for Codex CLI;
 - installs a managed block in SalsaNOW's `I:\Apps\SalsaNOW\StartupBatch.bat`;
 - preserves unrelated commands already present in `StartupBatch.bat`;
-- keeps a fallback setup copy in `Documents`;
-- restores the extension from this repository if both persistent copies vanish.
+- repairs missing or damaged managed files whenever SalsaNOW starts.
+
+Codex asks you to sign in when you first run it. LimeNow does not handle or
+store Codex credentials.
+
+### Minecraft
+
+- installs or repairs a portable Modrinth App compatibility build under `I:\Apps`;
+- makes Microsoft/Minecraft authentication work with GeForce NOW's HTTPS proxy;
+- persists Modrinth settings, instances, and Microsoft sessions across machines;
+- verifies the compatibility archive and executable with SHA-256;
+- restores the persistent Modrinth desktop shortcut;
+- keeps the shorter persistent profile path needed by large modpacks.
+
+### More coming
+
+LimeNow is designed as a small SalsaNOW extension point rather than a replacement.
+More session fixes and opt-in app integrations can be added as repeatable,
+self-repairing modules.
 
 ## Install the extension on a SalsaNOW session
 
@@ -41,13 +62,36 @@ make NVIDIA's short-lived HTTPS proxy certificates appear expired.
 - [Read `install.ps1`](install.ps1)
 - [Read the full extension setup](setup.ps1)
 
-No account passwords, Microsoft tokens, API keys, or other credentials are
-collected or stored by LimeNow.
+LimeNow never asks for, reads, or transmits account passwords or tokens.
+Modrinth itself stores its Microsoft session in its application database.
+LimeNow places that unmodified database in SalsaNOW's persistent storage so the
+session can survive a new machine; anyone with access to that storage should
+treat it as sensitive.
+
+## Why a compatibility build is needed
+
+SalsaNOW runs inside GeForce NOW, whose caching proxy presents an NVIDIA HTTPS
+certificate chain. Windows trusts that chain, but official Modrinth App builds
+currently use bundled web-PKI roots instead of the Windows certificate store.
+This breaks the final Microsoft OAuth token request even though sign-in succeeds
+in the embedded browser.
+
+LimeNow builds Modrinth reproducibly from an exact official source tag and
+switches only its HTTP client to Windows-native TLS. Certificate validation
+remains enabled. The build workflow, upstream source tag, GPL license, and
+checksums are public in this repository. This is an unsigned LimeNow
+compatibility build, not an official Modrinth release.
+
+- [Inspect the reproducible build workflow](.github/workflows/build-modrinth-gfn.yml)
+- [Inspect the official upstream Modrinth source](https://github.com/modrinth/code/tree/v0.16.1)
 
 ## Persistent locations
 
 - Extension setup: `I:\Apps\SalsaNOW\EasySetup`
-- Prism Launcher: `I:\Apps\PrismLauncher`
+- Node.js: `I:\Apps\LimeNow\NodeJS`
+- npm global packages and Codex: `I:\Apps\LimeNow\NpmGlobal`
+- Modrinth App: `I:\Apps\ModrinthApp`
+- Modrinth data: `I:\Apps\ModrinthData`
 - SalsaNOW extension hook: `I:\Apps\SalsaNOW\StartupBatch.bat`
 - Repair log: `I:\Apps\SalsaNOW\EasySetup\setup.log`
 
