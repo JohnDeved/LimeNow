@@ -18,17 +18,28 @@ authentication on GeForce NOW machines.
 
 - fixes SalsaNOW's Windows timezone and NVIDIA proxy-certificate validation;
 - switches the keyboard to German QWERTZ;
-- installs a persistent official Node.js LTS build with npm and npx;
-- installs the official OpenAI Codex CLI package through npm;
-- configures Node.js to use the trusted Windows certificate store on GeForce NOW;
-- adds persistent Node.js, npm, npx, and Codex commands to `PATH`;
-- creates a desktop launcher for Codex CLI;
 - installs a managed block in SalsaNOW's `I:\Apps\SalsaNOW\StartupBatch.bat`;
 - preserves unrelated commands already present in `StartupBatch.bat`;
 - repairs missing or damaged managed files whenever SalsaNOW starts.
 
+### Development tools
+
+- installs a persistent official Node.js LTS build with npm and npx;
+- installs the official OpenAI Codex CLI package through npm;
+- installs portable Git for Windows and the official GitHub CLI (`gh`);
+- installs official Visual Studio Code in portable mode, including the `code` CLI;
+- installs the official unpackaged Windows Terminal in portable mode, without
+  administrator rights or the Microsoft Store;
+- adds `node`, `npm`, `npx`, `codex`, `git`, `gh`, `code`, and `wt` to `PATH`;
+- configures Node.js to use the trusted Windows certificate store on GeForce NOW;
+- creates desktop launchers for Codex, Visual Studio Code, and Windows Terminal;
+- opens Command Prompt inside Windows Terminal from its desktop launcher;
+- keeps editor extensions, settings, terminal state, npm packages, and tools in
+  SalsaNOW's persistent `I:\Apps` storage.
+
 Codex asks you to sign in when you first run it. LimeNow does not handle or
-store Codex credentials.
+store Codex credentials. GitHub CLI similarly asks you to authenticate when you
+first use an account command; LimeNow does not handle or store that login.
 
 ### Minecraft
 
@@ -90,6 +101,10 @@ compatibility build, not an official Modrinth release.
 - Extension setup: `I:\Apps\SalsaNOW\EasySetup`
 - Node.js: `I:\Apps\LimeNow\NodeJS`
 - npm global packages and Codex: `I:\Apps\LimeNow\NpmGlobal`
+- Git for Windows: `I:\Apps\LimeNow\Git`
+- GitHub CLI: `I:\Apps\LimeNow\GitHubCLI`
+- Visual Studio Code and portable data: `I:\Apps\LimeNow\VSCode`
+- Windows Terminal and portable settings: `I:\Apps\LimeNow\WindowsTerminal`
 - Modrinth App: `I:\Apps\ModrinthApp`
 - Modrinth data: `I:\Apps\ModrinthData`
 - SalsaNOW extension hook: `I:\Apps\SalsaNOW\StartupBatch.bat`
