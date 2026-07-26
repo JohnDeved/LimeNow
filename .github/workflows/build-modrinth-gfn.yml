@@ -63,6 +63,27 @@ jobs:
           $cargo = $cargo.Replace($oldFeature, $newFeature)
           Set-Content -LiteralPath $cargoPath -Value $cargo -Encoding utf8 -NoNewline
 
+          foreach ($versionPath in @("apps/app/Cargo.toml", "packages/app-lib/Cargo.toml")) {
+            $manifest = Get-Content -LiteralPath $versionPath -Raw
+            $oldVersion = 'version = "1.0.0-local"'
+            $versionMatches = ([regex]::Matches($manifest, [regex]::Escape($oldVersion))).Count
+            if ($versionMatches -ne 1) {
+              throw "Expected exactly one local version in $versionPath; found $versionMatches."
+            }
+            $manifest = $manifest.Replace($oldVersion, "version = `"$env:MODRINTH_VERSION`"")
+            Set-Content -LiteralPath $versionPath -Value $manifest -Encoding utf8 -NoNewline
+          }
+
+          $frontendPath = "apps/app-frontend/package.json"
+          $frontend = Get-Content -LiteralPath $frontendPath -Raw
+          $oldFrontendVersion = '"version": "1.0.0-local"'
+          $frontendVersionMatches = ([regex]::Matches($frontend, [regex]::Escape($oldFrontendVersion))).Count
+          if ($frontendVersionMatches -ne 1) {
+            throw "Expected exactly one local frontend version; found $frontendVersionMatches."
+          }
+          $frontend = $frontend.Replace($oldFrontendVersion, "`"version`": `"$env:MODRINTH_VERSION`"")
+          Set-Content -LiteralPath $frontendPath -Value $frontend -Encoding utf8 -NoNewline
+
           Copy-Item -LiteralPath "packages/app-lib/.env.prod" -Destination "packages/app-lib/.env"
 
           $patched = Get-Content -LiteralPath $cargoPath -Raw
@@ -92,7 +113,8 @@ jobs:
           $stage = "target/limenow-package"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item -LiteralPath $executable -Destination $stage
-          Copy-Item -LiteralPath "LICENSE" -Destination (Join-Path $stage "MODRINTH-GPL-3.0-LICENSE")
+          Copy-Item -LiteralPath "apps/app/LICENSE" -Destination (Join-Path $stage "MODRINTH-GPL-3.0-LICENSE")
+          Copy-Item -LiteralPath "apps/app/COPYING.md" -Destination (Join-Path $stage "MODRINTH-COPYING.md")
 
           @"
           LimeNow Modrinth GFN compatibility edition
