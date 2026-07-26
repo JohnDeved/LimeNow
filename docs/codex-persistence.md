@@ -46,10 +46,22 @@ npm repair.
 
 On the first managed run, LimeNow copies an existing `auth.json`,
 `config.toml`, named profiles, and session rollouts into the dedicated layout.
-It then replaces only the two temporary session directories with junctions.
-The original temporary directories are renamed with a
-`.limenow-migrated-<timestamp>` suffix as a recoverable migration backup; they
-are not copied into persistent storage.
+If Codex is already running, LimeNow leaves both live session directories
+untouched and records a safe snapshot; junction activation is deferred until a
+later setup or launch after Codex exits. This allows setup to run from an active
+Codex-assisted workflow without moving a rollout directory underneath it.
+One hidden, mutex-protected watcher refreshes that narrow snapshot while Codex
+remains open, performs a final refresh after the last Codex process exits, and
+then terminates. It does not write a diagnostic log or expand the state
+manifest. Snapshot replacements are staged beside the destination and renamed
+only after the copy completes; an active JSONL rollout is promoted only when
+the copied prefix ends at a complete line. The previous complete snapshot
+therefore remains intact if a machine disappears during a write.
+
+When Codex is not running, LimeNow replaces only the two temporary session
+directories with junctions. The original temporary directories are renamed
+with a `.limenow-migrated-<timestamp>` suffix as a recoverable migration backup;
+they are not copied into persistent storage.
 
 On a replacement GFN machine, setup restores auth and config files and recreates
 the two junctions. The official CLI can then discover the persistent rollouts

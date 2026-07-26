@@ -73,10 +73,46 @@ try {
         -Value 'model = "review-model"' `
         -NoNewline
     $sessionFile = Join-Path $firstSessions 'rollout-test.jsonl'
-    Set-Content -LiteralPath $sessionFile -Value 'fake-session-state' -NoNewline
+    Set-Content -LiteralPath $sessionFile -Value 'fake-session-state'
+    $partialSessionFile = Join-Path $firstSessions 'rollout-active.jsonl'
+    Set-Content -LiteralPath $partialSessionFile -Value 'complete-fake-session-state'
 
-    if ((Invoke-StateScript -Action Initialize -SessionHome $firstHome -ApplyAcl) -ne 0) {
+    if ((Invoke-StateScript -Action Snapshot -SessionHome $firstHome -ApplyAcl) -ne 0) {
+        throw 'Active-session-safe Codex state snapshot failed.'
+    }
+    $persistentActiveSession = Join-Path (
+        $testRoot
+    ) 'persistent\sessions\active\2026\07\26\rollout-active.jsonl'
+    $completeSnapshotHash = (
+        Get-FileHash -LiteralPath $persistentActiveSession -Algorithm SHA256
+    ).Hash
+    Set-Content `
+        -LiteralPath $partialSessionFile `
+        -Value 'incomplete-fake-session-state' `
+        -NoNewline
+    if ((Invoke-StateScript -Action Snapshot -SessionHome $firstHome) -ne 0) {
+        throw 'Partial active-session snapshot validation failed.'
+    }
+    $snapshotSessionItem = Get-Item -LiteralPath (Join-Path $firstHome 'sessions') -Force
+    if ($snapshotSessionItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'The snapshot action changed the active session directory into a link.'
+    }
+    $retainedSnapshotHash = (
+        Get-FileHash -LiteralPath $persistentActiveSession -Algorithm SHA256
+    ).Hash
+    if ($retainedSnapshotHash -ne $completeSnapshotHash) {
+        throw 'A partial active rollout replaced the last complete persistent snapshot.'
+    }
+    if ((Invoke-StateScript -Action Initialize -SessionHome $firstHome) -ne 0) {
         throw 'Initial Codex state migration failed.'
+    }
+    $authPath = Join-Path $testRoot 'persistent\auth\auth.json'
+    $emptyAcl = [Security.AccessControl.FileSecurity]::new()
+    $emptyAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    $emptyAcl.SetAccessRuleProtection($true, $false)
+    Set-Acl -LiteralPath $authPath -AclObject $emptyAcl
+    if ((Invoke-StateScript -Action Watch -SessionHome $firstHome -ApplyAcl) -ne 0) {
+        throw 'Codex snapshot watcher or ACL-upgrade recovery validation failed.'
     }
 
     $persistentRoot = Join-Path $testRoot 'persistent'
@@ -84,6 +120,33 @@ try {
         $acl = Get-Acl -LiteralPath (Join-Path $persistentRoot $protectedDirectory)
         if (-not $acl.AreAccessRulesProtected) {
             throw "Codex state permissions still inherit on: $protectedDirectory"
+        }
+    }
+    foreach ($protectedFile in @(
+        (Join-Path $persistentRoot 'auth\auth.json'),
+        (Join-Path $persistentRoot 'config\config.toml'),
+        (Join-Path $persistentRoot 'sessions\active\2026\07\26\rollout-test.jsonl')
+    )) {
+        $acl = Get-Acl -LiteralPath $protectedFile
+        $currentUserRule = @(
+            $acl.Access |
+                Where-Object {
+                    $_.IdentityReference -eq [Security.Principal.WindowsIdentity]::GetCurrent().Name -and
+                    $_.AccessControlType -eq 'Allow' -and
+                    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
+                        [Security.AccessControl.FileSystemRights]::FullControl
+                }
+        )
+        $allowedIdentities = @(
+            $acl.Access |
+                Where-Object { $_.AccessControlType -eq 'Allow' } |
+                Select-Object -ExpandProperty IdentityReference -Unique
+        )
+        if (-not $acl.AreAccessRulesProtected -or
+            $currentUserRule.Count -lt 1 -or
+            $allowedIdentities.Count -ne 2 -or
+            $allowedIdentities -notcontains 'NT AUTHORITY\SYSTEM') {
+            throw "A persisted Codex file lacks a repeatable current-user ACL: $protectedFile"
         }
     }
     $expectedFiles = @(
@@ -194,11 +257,11 @@ exit /b 0
     $diagnosticText = Get-ChildItem -LiteralPath $testRoot -File |
         Where-Object { $_.Extension -in @('.out', '.err') } |
         Get-Content -Raw -ErrorAction SilentlyContinue
-    if ($diagnosticText -match 'fake-auth-state|fake-session-state|refreshed-fake-auth') {
+    if ($diagnosticText -match 'fake-auth-state|fake-session-state|refreshed-fake-auth|incomplete-fake-session-state') {
         throw 'Codex credential or session content appeared in launcher diagnostics.'
     }
 
-    Write-Output 'Codex persistence test passed: SetupIntegration, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, LogoutPropagation, RedactedDiagnostics'
+    Write-Output 'Codex persistence test passed: SetupIntegration, ActiveSessionSnapshot, DeferredLinkSafety, SnapshotWatcher, AtomicSnapshotPromotion, UpgradeAclRecovery, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, LogoutPropagation, RedactedDiagnostics'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {
