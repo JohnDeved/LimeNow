@@ -127,6 +127,18 @@ function Copy-IfChanged {
     }
 }
 
+function Resolve-LimeNowPowerShell {
+    $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Source -First 1
+    if (-not $powerShell) {
+        $powerShell = Join-Path $PSHOME 'powershell.exe'
+    }
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        throw "Could not find a PowerShell executable for the LimeNow launcher: $powerShell"
+    }
+    return $powerShell
+}
+
 function Ensure-SetupCopies {
     $currentScript = $PSCommandPath
     $currentFullPath = [IO.Path]::GetFullPath($currentScript)
@@ -140,19 +152,20 @@ function Ensure-SetupCopies {
         Copy-IfChanged -Source $currentScript -Destination $documentsScript
     }
 
-    $launcher = @'
+    $powerShell = Resolve-LimeNowPowerShell
+    $launcher = @"
 @echo off
 set "SETUP_MAIN=I:\Apps\SalsaNOW\EasySetup\SalsaNOW-EasySetup.ps1"
 set "SETUP_FALLBACK=%USERPROFILE%\Documents\SalsaNOW-EasySetup.ps1"
 if exist "%SETUP_MAIN%" (
-  PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File "%SETUP_MAIN%"
+  "$powerShell" -NoProfile -ExecutionPolicy Bypass -File "%SETUP_MAIN%"
 ) else if exist "%SETUP_FALLBACK%" (
-  PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File "%SETUP_FALLBACK%"
+  "$powerShell" -NoProfile -ExecutionPolicy Bypass -File "%SETUP_FALLBACK%"
 ) else (
   echo SalsaNOW Easy Setup could not find its PowerShell script.
   pause
 )
-'@
+"@
     $launcherPath = Join-Path $setupRoot 'SalsaNOW-EasySetup.bat'
     Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding ASCII
     Copy-IfChanged -Source $launcherPath -Destination $documentsBatch
@@ -163,17 +176,18 @@ function Ensure-StartupHook {
 
     $beginMarker = 'REM === SALSANOW EASY SETUP BEGIN ==='
     $endMarker = 'REM === SALSANOW EASY SETUP END ==='
+    $powerShell = Resolve-LimeNowPowerShell
     $managedBlock = @"
 $beginMarker
 set "SALSANOW_SETUP_MAIN=I:\Apps\SalsaNOW\EasySetup\SalsaNOW-EasySetup.ps1"
 set "SALSANOW_SETUP_FALLBACK=%USERPROFILE%\Documents\SalsaNOW-EasySetup.ps1"
 if not exist "%SALSANOW_SETUP_MAIN%" if not exist "%SALSANOW_SETUP_FALLBACK%" (
-  PowerShell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Set-TimeZone -Id 'W. Europe Standard Time' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path 'I:\Apps\SalsaNOW\EasySetup' -Force | Out-Null; Invoke-WebRequest -Uri '$remoteSetupUrl' -OutFile '%SALSANOW_SETUP_MAIN%' -UseBasicParsing"
+  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Set-TimeZone -Id 'W. Europe Standard Time' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path 'I:\Apps\SalsaNOW\EasySetup' -Force | Out-Null; Invoke-WebRequest -Uri '$remoteSetupUrl' -OutFile '%SALSANOW_SETUP_MAIN%' -UseBasicParsing"
 )
 if exist "%SALSANOW_SETUP_MAIN%" (
-  PowerShell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
+  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
 ) else if exist "%SALSANOW_SETUP_FALLBACK%" (
-  PowerShell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
+  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
 )
 $endMarker
 "@
@@ -224,30 +238,193 @@ function Ensure-TimeZone {
     }
 }
 
+function Ensure-LimeNowKeyboardNativeType {
+    if (-not ([System.Management.Automation.PSTypeName]'LimeNowKeyboardNative').Type) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class LimeNowKeyboardNative
+{
+    public const uint KlfActivate = 0x00000001;
+    public const uint WmInputLangChangeRequest = 0x0050;
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetKeyboardLayout(uint idThread);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadKeyboardLayout(string pwszKLID, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+}
+'@
+    }
+}
+
+function Convert-LimeNowKeyboardHandleToId {
+    param([Parameter(Mandatory)][IntPtr]$Handle)
+
+    $value = $Handle.ToInt64() -band 0xffffffff
+    return '{0:X8}' -f [UInt32]$value
+}
+
+function Get-LimeNowForegroundKeyboardLayout {
+    Ensure-LimeNowKeyboardNativeType
+    $windowHandle = [LimeNowKeyboardNative]::GetForegroundWindow()
+    if ($windowHandle -eq [IntPtr]::Zero) {
+        return $null
+    }
+
+    $threadId = [LimeNowKeyboardNative]::GetWindowThreadProcessId(
+        $windowHandle,
+        [IntPtr]::Zero
+    )
+    if ($threadId -eq 0) {
+        return $null
+    }
+
+    $layoutHandle = [LimeNowKeyboardNative]::GetKeyboardLayout($threadId)
+    if ($layoutHandle -eq [IntPtr]::Zero) {
+        return $null
+    }
+
+    $layoutId = Convert-LimeNowKeyboardHandleToId -Handle $layoutHandle
+    return [pscustomobject]@{
+        WindowHandle = $windowHandle
+        LayoutId = $layoutId
+        LanguageId = $layoutId.Substring($layoutId.Length - 4)
+    }
+}
+
+function Get-LimeNowDefaultInputMethodTip {
+    try {
+        return Get-WinDefaultInputMethodOverride -ErrorAction Stop |
+            Select-Object -ExpandProperty InputMethodTip -First 1
+    }
+    catch {
+        return $null
+    }
+}
+
+function Set-QwertzKeyboardState {
+    param(
+        [Parameter(Mandatory)][string]$LanguageTag,
+        [Parameter(Mandatory)][string]$InputTip
+    )
+
+    $languages = @(Get-WinUserLanguageList)
+    $german = $languages |
+        Where-Object LanguageTag -eq $LanguageTag |
+        Select-Object -First 1
+    if (-not $german) {
+        $german = New-WinUserLanguageList $LanguageTag | Select-Object -First 1
+    }
+
+    $inputMethods = @($german.InputMethodTips | ForEach-Object { [string]$_ })
+    $hasGermanKeyboard = @(
+        $inputMethods | Where-Object { $_ -match '(?i)^0407:(?:00000407|A0000407)$' }
+    ).Count -gt 0
+    if (-not $hasGermanKeyboard) {
+        $german.InputMethodTips.Add($InputTip)
+    }
+
+    $orderedLanguages = @($german) + @(
+        $languages | Where-Object LanguageTag -ne $LanguageTag
+    )
+    $currentOrder = (@($languages | ForEach-Object LanguageTag) -join '|')
+    $desiredOrder = (@($orderedLanguages | ForEach-Object LanguageTag) -join '|')
+    if ($currentOrder -ne $desiredOrder -or -not $hasGermanKeyboard) {
+        Set-WinUserLanguageList -LanguageList $orderedLanguages -Force
+    }
+
+    Set-WinDefaultInputMethodOverride -InputTip $InputTip
+    Ensure-LimeNowKeyboardNativeType
+    $layoutHandle = [LimeNowKeyboardNative]::LoadKeyboardLayout(
+        $InputTip.Substring($InputTip.IndexOf(':') + 1),
+        [LimeNowKeyboardNative]::KlfActivate
+    )
+    if ($layoutHandle -eq [IntPtr]::Zero) {
+        throw "Windows could not load the requested keyboard layout: $InputTip"
+    }
+    [void][LimeNowKeyboardNative]::ActivateKeyboardLayout(
+        $layoutHandle,
+        [LimeNowKeyboardNative]::KlfActivate
+    )
+
+    $foreground = Get-LimeNowForegroundKeyboardLayout
+    if ($foreground) {
+        [void][LimeNowKeyboardNative]::PostMessage(
+            $foreground.WindowHandle,
+            [LimeNowKeyboardNative]::WmInputLangChangeRequest,
+            [IntPtr]::Zero,
+            $layoutHandle
+        )
+    }
+}
+
+function Get-QwertzKeyboardState {
+    param([Parameter(Mandatory)][string]$LanguageTag)
+
+    $languages = @(Get-WinUserLanguageList)
+    $defaultInputTip = Get-LimeNowDefaultInputMethodTip
+    $foreground = Get-LimeNowForegroundKeyboardLayout
+    return [pscustomobject]@{
+        FirstLanguageTag = if ($languages) { [string]$languages[0].LanguageTag } else { $null }
+        DefaultInputTip = if ($defaultInputTip) { [string]$defaultInputTip } else { $null }
+        DefaultIsQwertz = [bool]($defaultInputTip -match '(?i)^0407:')
+        ActiveLayoutId = if ($foreground) { $foreground.LayoutId } else { $null }
+        ActiveIsQwertz = [bool]($foreground -and $foreground.LanguageId -eq '0407')
+        ForegroundWindowAvailable = [bool]$foreground
+    }
+}
+
 function Ensure-QwertzKeyboard {
     $languageTag = 'de-DE'
     $inputTip = '0407:00000407'
-    $languages = Get-WinUserLanguageList
-    $german = $languages |
-        Where-Object LanguageTag -eq $languageTag |
-        Select-Object -First 1
-    $languageListChanged = $false
+    $maxAttempts = 12
+    $retryDelaySeconds = 2
+    $lastState = $null
+    $lastError = $null
 
-    if (-not $german) {
-        $german = New-WinUserLanguageList $languageTag | Select-Object -First 1
-        $languages.Add($german)
-        $languageListChanged = $true
-    }
-    if (-not $german.InputMethodTips.Contains($inputTip)) {
-        $german.InputMethodTips.Add($inputTip)
-        $languageListChanged = $true
-    }
-    if ($languageListChanged) {
-        Set-WinUserLanguageList $languages -Force
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Set-QwertzKeyboardState -LanguageTag $languageTag -InputTip $inputTip
+            $lastState = Get-QwertzKeyboardState -LanguageTag $languageTag
+            if ($lastState.FirstLanguageTag -eq $languageTag -and
+                $lastState.DefaultIsQwertz -and
+                $lastState.ActiveIsQwertz) {
+                Write-SetupLog "Verified German QWERTZ after $attempt attempt(s); active layout $($lastState.ActiveLayoutId)."
+                return
+            }
+            $lastError = if (-not $lastState.ForegroundWindowAvailable) {
+                'No foreground input window is ready yet.'
+            }
+            else {
+                "Foreground layout is $($lastState.ActiveLayoutId)."
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+
+        if ($attempt -lt $maxAttempts) {
+            Start-Sleep -Seconds $retryDelaySeconds
+        }
     }
 
-    Set-WinDefaultInputMethodOverride -InputTip $inputTip
-    Write-SetupLog 'Verified German QWERTZ as the default keyboard layout.'
+    $defaultInputTip = if ($lastState) { $lastState.DefaultInputTip } else { $null }
+    $activeLayoutId = if ($lastState) { $lastState.ActiveLayoutId } else { $null }
+    Write-SetupLog "WARNING: German QWERTZ was not verified after $maxAttempts attempt(s); default=$defaultInputTip active=$activeLayoutId reason=$lastError"
 }
 
 function Test-NodeInstall {
@@ -600,6 +777,7 @@ function Ensure-CodexLauncher {
     if (-not (Test-Path -LiteralPath $codexCommand)) {
         throw "Codex command is missing: $codexCommand"
     }
+    $powerShell = Resolve-LimeNowPowerShell
 
     Ensure-CodexStateManager
     & $codexStateManager `
@@ -612,7 +790,7 @@ function Ensure-CodexLauncher {
     $wrapper = @"
 @echo off
 REM LimeNow managed Codex persistence wrapper
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$codexStateManager" -Action Run -PersistentRoot "$codexRoot" -CodexCommand "$codexCommand" %*
+"$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$codexStateManager" -Action Run -PersistentRoot "$codexRoot" -CodexCommand "$codexCommand" %*
 exit /b %ERRORLEVEL%
 "@
     Set-Content -LiteralPath $codexWrapper -Value $wrapper -Encoding ASCII
@@ -834,11 +1012,7 @@ function Ensure-LimeSshManager {
 function Ensure-LimeSshShortcut {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $shell = New-Object -ComObject WScript.Shell
-    $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty Source -First 1
-    if (-not $powerShell) {
-        $powerShell = Join-Path $PSHOME 'powershell.exe'
-    }
+    $powerShell = Resolve-LimeNowPowerShell
     $shortcut = $shell.CreateShortcut((Join-Path $desktop 'LimeSSH Remote Access.lnk'))
     $shortcut.TargetPath = $powerShell
     $shortcut.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$limeSshManager`" -Action Manage"
@@ -1104,7 +1278,6 @@ Write-SetupLog "LimeNow setup started. StartupMode=$Startup"
 
 try {
     Ensure-TimeZone
-    Ensure-QwertzKeyboard
     Ensure-SetupCopies
     Ensure-StartupHook
     Remove-ObsoleteGitHubCli
@@ -1121,6 +1294,7 @@ try {
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher
     Ensure-ModrinthShortcut
+    Ensure-QwertzKeyboard
     if (-not $Startup) {
         Test-MicrosoftLoginTls
     }

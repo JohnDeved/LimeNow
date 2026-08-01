@@ -24,6 +24,11 @@ That avoids relying on a temporary machine's Windows credential store. Codex
 still receives its normal temporary `CODEX_HOME`; LimeNow does not redirect the
 entire home to persistent storage.
 
+The generated wrapper resolves PowerShell 7 (`pwsh.exe`) first and embeds its
+absolute path. It falls back to the current PowerShell host only when PowerShell
+7 is unavailable. This keeps the managed Codex launcher usable on GFN images
+that block legacy Windows PowerShell while preserving compatibility elsewhere.
+
 Codex 0.145.0 discovers and resumes conversations from rollout files under
 `sessions`. Its `state_5.sqlite` database indexes those rollouts and can
 backfill from them, so LimeNow intentionally lets that database be recreated on

@@ -12,6 +12,7 @@ on:
       - tools/Build-LimeSshPrototype.ps1
       - tools/Test-LimeSshPrototype.ps1
       - tools/Test-CodexPersistence.ps1
+      - tools/Test-KeyboardLayout.ps1
       - tools/Test-RemoteAccessManager.ps1
   push:
     branches:
@@ -25,6 +26,7 @@ on:
       - tools/Build-LimeSshPrototype.ps1
       - tools/Test-LimeSshPrototype.ps1
       - tools/Test-CodexPersistence.ps1
+      - tools/Test-KeyboardLayout.ps1
       - tools/Test-RemoteAccessManager.ps1
 
 permissions:
@@ -69,7 +71,8 @@ jobs:
             '.\codex-state.ps1',
             '.\remote-access.ps1',
             '.\setup.ps1',
-            '.\tools\Test-CodexPersistence.ps1'
+            '.\tools\Test-CodexPersistence.ps1',
+            '.\tools\Test-KeyboardLayout.ps1'
           )) {
             $tokens = $null
             $parseErrors = $null
@@ -83,6 +86,7 @@ jobs:
             }
           }
           & .\tools\Test-CodexPersistence.ps1
+          & .\tools\Test-KeyboardLayout.ps1
           & .\tools\Test-LimeSshPrototype.ps1 `
             -LimeSshPath .\dist\LimeSSH.exe `
             -RelayPath .\dist\uptermd.exe

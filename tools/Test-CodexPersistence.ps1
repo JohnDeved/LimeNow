@@ -170,13 +170,33 @@ try {
     foreach ($requiredSetupText in @(
         'function Repair-CodexCli',
         'function Ensure-CodexLauncher',
+        'function Resolve-LimeNowPowerShell',
         "'codex.cmd' = `$codexWrapper",
         'Repair-CodexCli',
-        'Ensure-CodexLauncher'
+        'Ensure-CodexLauncher',
+        'Resolve-LimeNowPowerShell'
     )) {
         if (-not $setupSource.Contains($requiredSetupText)) {
             throw "Setup is missing required Codex integration: $requiredSetupText"
         }
+    }
+    $codexLauncherStart = $setupSource.IndexOf('function Ensure-CodexLauncher')
+    $codexLauncherEnd = $setupSource.IndexOf(
+        'function Ensure-DeveloperCommandShims',
+        $codexLauncherStart
+    )
+    if ($codexLauncherStart -lt 0 -or $codexLauncherEnd -le $codexLauncherStart) {
+        throw 'Could not locate the managed Codex launcher block.'
+    }
+    $codexLauncher = $setupSource.Substring(
+        $codexLauncherStart,
+        $codexLauncherEnd - $codexLauncherStart
+    )
+    if ($codexLauncher.Contains('%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe')) {
+        throw 'The Codex launcher still hardcodes legacy Windows PowerShell.'
+    }
+    if (-not $codexLauncher.Contains('"$powerShell" -NoLogo -NoProfile')) {
+        throw 'The Codex launcher does not use its resolved PowerShell host.'
     }
     $removalStart = $setupSource.IndexOf('function Remove-ObsoleteGitHubCli')
     $removalEnd = $setupSource.IndexOf(
@@ -291,7 +311,7 @@ exit /b 0
         throw 'Codex credential or session content appeared in launcher diagnostics.'
     }
 
-    Write-Output 'Codex persistence test passed: SetupIntegration, ActiveSessionSnapshot, DeferredLinkSafety, SnapshotWatcher, AtomicSnapshotPromotion, UpgradeAclRecovery, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, ConfigDeletionPropagation, LogoutPropagation, RedactedDiagnostics'
+    Write-Output 'Codex persistence test passed: SetupIntegration, PowerShellHostSelection, ActiveSessionSnapshot, DeferredLinkSafety, SnapshotWatcher, AtomicSnapshotPromotion, UpgradeAclRecovery, Migration, RestrictedAcl, ReplacementRestore, SessionDiscovery, ForcedFileAuth, ExitCode, PostRunSync, ConfigDeletionPropagation, LogoutPropagation, RedactedDiagnostics'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {
