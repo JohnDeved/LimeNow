@@ -72,7 +72,7 @@ jobs:
             '.\remote-access.ps1',
             '.\setup.ps1',
             '.\tools\Test-CodexPersistence.ps1',
-            '.\tools\Test-KeyboardLayout.ps1',
+            '.\tools\Test-KeyboardLayout.ps1'
           )) {
             $tokens = $null
             $parseErrors = $null
