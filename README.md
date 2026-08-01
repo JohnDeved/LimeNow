@@ -17,7 +17,8 @@ authentication on GeForce NOW machines.
 ### General fixes & improvements
 
 - fixes SalsaNOW's Windows timezone and NVIDIA proxy-certificate validation;
-- switches the keyboard to German QWERTZ;
+- applies German QWERTZ after the startup environment settles, with bounded
+  retries and foreground-layout verification;
 - installs a managed block in SalsaNOW's `I:\Apps\SalsaNOW\StartupBatch.bat`;
 - preserves unrelated commands already present in `StartupBatch.bat`;
 - repairs missing or damaged managed files whenever SalsaNOW starts.
