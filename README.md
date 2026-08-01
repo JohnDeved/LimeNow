@@ -20,6 +20,9 @@ authentication on GeForce NOW machines.
 - applies German QWERTZ after the startup environment settles, with bounded
   retries and foreground-layout verification;
 - installs a managed block in SalsaNOW's `I:\Apps\SalsaNOW\StartupBatch.bat`;
+- opens a temporary PowerShell 7 window with live setup progress on every session;
+- checks GitHub for LimeNow updates at launch and keeps the last known-good setup
+  when the update is unavailable or invalid;
 - preserves unrelated commands already present in `StartupBatch.bat`;
 - repairs missing or damaged managed files whenever SalsaNOW starts.
 
@@ -28,20 +31,20 @@ authentication on GeForce NOW machines.
 - installs a persistent official Node.js LTS build with npm and npx;
 - installs and repairs the official OpenAI Codex CLI;
 - installs portable Git for Windows;
+- installs the official GitHub CLI (`gh`) as a checksum-pinned portable tool;
 - installs official Visual Studio Code in portable mode, including the `code` CLI;
 - installs the official unpackaged Windows Terminal in portable mode, without
   administrator rights or the Microsoft Store;
-- adds `node`, `npm`, `npx`, `codex`, `git`, `code`, and `wt` to `PATH`;
+- adds `node`, `npm`, `npx`, `codex`, `git`, `gh`, `code`, and `wt` to `PATH`;
 - configures Node.js to use the trusted Windows certificate store on GeForce NOW;
 - creates desktop launchers for Codex, Visual Studio Code, and Windows Terminal;
 - opens Command Prompt inside Windows Terminal from its desktop launcher;
 - keeps editor extensions, settings, terminal state, npm packages, and tools in
   SalsaNOW's persistent `I:\Apps` storage;
+- keeps GitHub CLI configuration and opt-in authentication under
+  `I:\Apps\LimeNow\GitHubCLI\Config`;
 - keeps only Codex authentication, resumable sessions, and user configuration
   under `I:\Apps\LimeNow\Codex`.
-
-GitHub CLI deliberately remains on your local computer; Git itself stays
-available inside GeForce NOW.
 
 > [!WARNING]
 > Codex file-based authentication contains reusable access tokens. LimeNow
@@ -51,6 +54,14 @@ available inside GeForce NOW.
 > LimeNow applies a current-user-and-SYSTEM ACL where the storage supports
 > Windows permissions, but SalsaNOW's storage security remains the outer trust
 > boundary. See [Codex persistence and security](docs/codex-persistence.md).
+
+> [!WARNING]
+> Persistent GitHub CLI sign-in stores a reusable OAuth token in plaintext under
+> SalsaNOW's persistent storage because an ephemeral GFN credential vault cannot
+> survive machine replacement. LimeNow restricts that directory to the current
+> user and SYSTEM where the storage supports Windows ACLs, but anyone with access
+> to the underlying SalsaNOW storage may be able to use the same GitHub access.
+> See [GitHub CLI persistence and security](docs/github-cli-persistence.md).
 
 ### Remote development preview
 
@@ -110,19 +121,53 @@ The timezone command must run first because some SalsaNOW sessions expose a
 Central European clock while Windows incorrectly labels it as UTC. That can
 make NVIDIA's short-lived HTTPS proxy certificates appear expired.
 
+## Automatic session updates
+
+On each SalsaNOW launch, LimeNow opens a visible progress terminal and checks
+the `main` branch for the latest setup. A downloaded setup must carry LimeNow's
+script marker, expose the expected startup parameters, and pass PowerShell
+syntax validation before it atomically replaces the installed copy. The prior
+copy is retained as `SalsaNOW-EasySetup.ps1.previous`.
+
+After the setup is verified, LimeNow also refreshes its Codex state manager and
+LimeSSH manager. If GitHub is unavailable or any downloaded script is invalid,
+the session continues with the installed known-good files. The progress window
+closes automatically after showing the result. Automatic updates trust code
+published to this repository's `main` branch over HTTPS.
+
+## Persistent GitHub CLI sign-in
+
+LimeNow creates a **GitHub CLI Sign In** desktop shortcut. It starts GitHub's
+device flow in a terminal, shows an offline QR for GitHub's device page, and
+then displays GitHub CLI's one-time code. Scan the QR with a phone, or open the
+shown URL on the local computer, and enter the code there. LimeNow suppresses
+browser launch inside the GeForce NOW session. Authorization includes GitHub's
+`workflow` scope so Git can push changes to GitHub Actions workflow files; the
+shortcut upgrades an existing sign-in if that permission is missing.
+
+The flow deliberately passes `--insecure-storage` so the reusable token is
+written beneath the persistent `GH_CONFIG_DIR` instead of the temporary
+machine's Windows credential vault. The shortcut displays the storage warning
+before authentication. Normal `gh` commands and Git HTTPS credential requests
+are then routed through that same persistent directory.
+
 ## Audit before running
 
 - [Read `install.ps1`](install.ps1)
 - [Read the full extension setup](setup.ps1)
+- [Inspect the startup update and progress tests](tools/Test-StartupExperience.ps1)
+- [Inspect the GitHub CLI persistence tests](tools/Test-GitHubCliPersistence.ps1)
 - [Read the Codex persistence and security model](docs/codex-persistence.md)
+- [Read the GitHub CLI persistence and security model](docs/github-cli-persistence.md)
 - [Read the remote-access validation status](docs/remote-access-validation.md)
 - [Read the LimeSSH machine-mode prototype contract](docs/lime-ssh-machine-mode.md)
 - [Inspect the pinned LimeSSH prototype patch](patches/0001-Add-LimeSSH-machine-mode.patch)
 
-LimeNow never prints or transmits account passwords, Codex credentials, GitHub
-tokens, private SSH keys, or API keys. Its Codex state manager copies the
-existing `auth.json` credential file between the temporary profile and
-SalsaNOW's persistent storage without parsing or logging its contents.
+LimeNow never prints account passwords, Codex credentials, GitHub tokens,
+private SSH keys, or API keys. It does not read or parse GitHub CLI's token. Its
+Codex state manager copies the existing `auth.json` credential file between the
+temporary profile and SalsaNOW's persistent storage without parsing or logging
+its contents.
 Modrinth itself stores its Microsoft session in its application database.
 LimeNow places that unmodified database in SalsaNOW's persistent storage so the
 session can survive a new machine; anyone with access to that storage should
@@ -155,6 +200,8 @@ compatibility build, not an official Modrinth release.
   - active and archived rollouts: `sessions\active`, `sessions\archived`
   - user configuration: `config\config.toml` and `config\*.config.toml`
 - Git for Windows: `I:\Apps\LimeNow\Git`
+- GitHub CLI binary, launchers, configuration, and opt-in authentication:
+  `I:\Apps\LimeNow\GitHubCLI`
 - Visual Studio Code and portable data: `I:\Apps\LimeNow\VSCode`
 - Windows Terminal and portable settings: `I:\Apps\LimeNow\WindowsTerminal`
 - LimeSSH binary, public enrollment configuration, relay host key, license, and

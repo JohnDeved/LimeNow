@@ -1,6 +1,9 @@
+# LIMENOW_SETUP_SCRIPT
 [CmdletBinding()]
 param(
-    [switch]$Startup
+    [switch]$Startup,
+    [switch]$SkipStartupUpdate,
+    [switch]$RefreshManagedScripts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +26,17 @@ $gitRoot = Join-Path $limeNowAppsRoot 'Git'
 $gitVersion = '2.55.0.windows.3'
 $gitArchiveUrl = 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/PortableGit-2.55.0.3-64-bit.7z.exe'
 $gitArchiveHash = 'ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d'
+$githubCliRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
+$githubCliBinRoot = Join-Path $githubCliRoot 'bin'
+$githubCliConfigRoot = Join-Path $githubCliRoot 'Config'
+$githubCliExecutable = Join-Path $githubCliBinRoot 'gh.exe'
+$githubCliWrapper = Join-Path $githubCliRoot 'gh.cmd'
+$githubCliLoginLauncher = Join-Path $githubCliRoot 'GitHub-CLI-Sign-In.cmd'
+$githubCliLoginScript = Join-Path $githubCliRoot 'GitHub-CLI-Sign-In.ps1'
+$githubCliDeviceUrl = 'https://github.com/login/device'
+$githubCliVersion = '2.97.0'
+$githubCliArchiveUrl = 'https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_windows_amd64.zip'
+$githubCliArchiveHash = '35d7fe05c4dd1411ffda1e73dfc7c6f44b75c936ca51fa6595c657fdc0350cec'
 $vscodeRoot = Join-Path $limeNowAppsRoot 'VSCode'
 $vscodeVersion = '1.130.0'
 $vscodeArchiveUrl = 'https://vscode.download.prss.microsoft.com/dbazure/download/stable/1b6a188127eeaf9194f945eb6eb89a657e93c54c/VSCode-win32-x64-1.130.0.zip'
@@ -70,8 +84,198 @@ function Write-SetupLog {
 
     $line = '{0:yyyy-MM-dd HH:mm:ss zzz} [LimeNow] {1}' -f [DateTimeOffset]::Now, $Message
     Add-Content -LiteralPath $logPath -Value $line
+    Write-Host $line
+}
+
+function Show-StartupProgressHeader {
     if (-not $Startup) {
-        Write-Host $Message
+        return
+    }
+
+    try {
+        $Host.UI.RawUI.WindowTitle = 'LimeNow - Preparing GeForce NOW session'
+    }
+    catch {
+        # Some non-console hosts do not expose a writable window title.
+    }
+
+    $lime = [char]::ConvertFromUtf32(0x1F34B) +
+        [char]::ConvertFromUtf32(0x200D) +
+        [char]::ConvertFromUtf32(0x1F7E9)
+    Write-Host ''
+    Write-Host "$lime LimeNow" -ForegroundColor Green
+    Write-Host 'Updating and preparing this GeForce NOW session...' -ForegroundColor Cyan
+    Write-Host "Live log: $logPath" -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+function Assert-PowerShellScriptSyntax {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Description
+    )
+
+    $parseErrors = $null
+    [Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$null,
+        [ref]$parseErrors
+    ) | Out-Null
+    if ($parseErrors.Count) {
+        throw "$Description failed PowerShell syntax validation: $($parseErrors -join '; ')"
+    }
+}
+
+function Assert-LimeNowSetupCandidate {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $source = Get-Content -LiteralPath $Path -Raw
+    if ($source -notmatch '(?m)^# LIMENOW_SETUP_SCRIPT\r?$') {
+        throw 'The downloaded file is not a recognized LimeNow setup script.'
+    }
+
+    Assert-PowerShellScriptSyntax `
+        -Path $Path `
+        -Description 'The downloaded LimeNow setup script'
+
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$null,
+        [ref]$parseErrors
+    )
+    if ($parseErrors.Count) {
+        throw "The downloaded LimeNow setup script failed syntax validation: $($parseErrors -join '; ')"
+    }
+
+    $parameterNames = @($ast.ParamBlock.Parameters | ForEach-Object {
+        $_.Name.VariablePath.UserPath
+    })
+    foreach ($requiredParameter in @('Startup', 'SkipStartupUpdate', 'RefreshManagedScripts')) {
+        if ($requiredParameter -notin $parameterNames) {
+            throw "The downloaded LimeNow setup script is missing its $requiredParameter startup parameter."
+        }
+    }
+}
+
+function Get-LimeNowManagedScriptCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LocalPath,
+        [Parameter(Mandatory)][string]$RemoteUrl,
+        [Parameter(Mandatory)][string]$CandidatePath,
+        [Parameter(Mandatory)][string]$Description
+    )
+
+    $useLocalCopy = -not $RefreshManagedScripts
+    if ($RefreshManagedScripts) {
+        try {
+            Invoke-WebRequest `
+                -Uri $RemoteUrl `
+                -OutFile $CandidatePath `
+                -Headers @{ 'Cache-Control' = 'no-cache' } `
+                -UseBasicParsing `
+                -TimeoutSec 60
+            Assert-PowerShellScriptSyntax -Path $CandidatePath -Description $Description
+            Write-SetupLog "Checked GitHub for the latest $Description."
+            return
+        }
+        catch {
+            if (Test-Path -LiteralPath $CandidatePath) {
+                Remove-Item -LiteralPath $CandidatePath -Force
+            }
+            if (-not (Test-Path -LiteralPath $LocalPath -PathType Leaf)) {
+                throw
+            }
+            Write-SetupLog "WARNING: Could not refresh $Description; using the installed copy. $($_.Exception.Message)"
+            $useLocalCopy = $true
+        }
+    }
+
+    if ($useLocalCopy -and (Test-Path -LiteralPath $LocalPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $LocalPath -Destination $CandidatePath
+    }
+    else {
+        Invoke-WebRequest `
+            -Uri $RemoteUrl `
+            -OutFile $CandidatePath `
+            -UseBasicParsing `
+            -TimeoutSec 60
+    }
+    Assert-PowerShellScriptSyntax -Path $CandidatePath -Description $Description
+}
+
+function Update-LimeNowSetup {
+    [CmdletBinding()]
+    param(
+        [string]$SourceUrl = $remoteSetupUrl,
+        [string]$DestinationPath = $canonicalScript
+    )
+
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+    $candidate = Join-Path $destinationDirectory (
+        'setup-update-' + [Guid]::NewGuid().ToString('N') + '.ps1'
+    )
+
+    try {
+        Write-SetupLog 'Checking GitHub for LimeNow updates...'
+        Invoke-WebRequest `
+            -Uri $SourceUrl `
+            -OutFile $candidate `
+            -Headers @{ 'Cache-Control' = 'no-cache' } `
+            -UseBasicParsing `
+            -TimeoutSec 60
+        Assert-LimeNowSetupCandidate -Path $candidate
+
+        $candidateHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+        if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+            $installedHash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash
+            if ($candidateHash -eq $installedHash) {
+                Write-SetupLog 'LimeNow is already up to date.'
+                return 'Current'
+            }
+
+            [IO.File]::Replace(
+                $candidate,
+                $DestinationPath,
+                "$DestinationPath.previous",
+                $true
+            )
+        }
+        else {
+            [IO.File]::Move($candidate, $DestinationPath)
+        }
+
+        Write-SetupLog 'Installed the latest LimeNow setup from GitHub; continuing with the update.'
+        return 'Updated'
+    }
+    catch {
+        Write-SetupLog "WARNING: LimeNow auto-update failed; continuing with the installed setup. $($_.Exception.Message)"
+        return 'Fallback'
+    }
+    finally {
+        if (Test-Path -LiteralPath $candidate) {
+            Remove-Item -LiteralPath $candidate -Force
+        }
+    }
+}
+
+function Show-StartupProgressResult {
+    param([Parameter(Mandatory)][bool]$Succeeded)
+
+    if (-not $Startup) {
+        return
+    }
+
+    Write-Host ''
+    if ($Succeeded) {
+        Write-Host 'LimeNow is ready. This window will close automatically.' -ForegroundColor Green
+        Start-Sleep -Seconds 2
+    }
+    else {
+        Write-Host "LimeNow could not finish. Review $logPath for details." -ForegroundColor Yellow
+        Start-Sleep -Seconds 10
     }
 }
 
@@ -128,10 +332,19 @@ function Copy-IfChanged {
 }
 
 function Resolve-LimeNowPowerShell {
-    $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty Source -First 1
+    $powerShell = 'I:\Apps\SalsaNOW\SilentApps\Powershell\pwsh.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        $powerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source -First 1
+    }
     if (-not $powerShell) {
-        $powerShell = Join-Path $PSHOME 'powershell.exe'
+        $hostExecutable = if ($PSVersionTable.PSEdition -eq 'Core') {
+            'pwsh.exe'
+        }
+        else {
+            'powershell.exe'
+        }
+        $powerShell = Join-Path $PSHOME $hostExecutable
     }
     if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
         throw "Could not find a PowerShell executable for the LimeNow launcher: $powerShell"
@@ -158,9 +371,9 @@ function Ensure-SetupCopies {
 set "SETUP_MAIN=I:\Apps\SalsaNOW\EasySetup\SalsaNOW-EasySetup.ps1"
 set "SETUP_FALLBACK=%USERPROFILE%\Documents\SalsaNOW-EasySetup.ps1"
 if exist "%SETUP_MAIN%" (
-  "$powerShell" -NoProfile -ExecutionPolicy Bypass -File "%SETUP_MAIN%"
+  "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SETUP_MAIN%"
 ) else if exist "%SETUP_FALLBACK%" (
-  "$powerShell" -NoProfile -ExecutionPolicy Bypass -File "%SETUP_FALLBACK%"
+  "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SETUP_FALLBACK%"
 ) else (
   echo SalsaNOW Easy Setup could not find its PowerShell script.
   pause
@@ -182,12 +395,12 @@ $beginMarker
 set "SALSANOW_SETUP_MAIN=I:\Apps\SalsaNOW\EasySetup\SalsaNOW-EasySetup.ps1"
 set "SALSANOW_SETUP_FALLBACK=%USERPROFILE%\Documents\SalsaNOW-EasySetup.ps1"
 if not exist "%SALSANOW_SETUP_MAIN%" if not exist "%SALSANOW_SETUP_FALLBACK%" (
-  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Set-TimeZone -Id 'W. Europe Standard Time' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path 'I:\Apps\SalsaNOW\EasySetup' -Force | Out-Null; Invoke-WebRequest -Uri '$remoteSetupUrl' -OutFile '%SALSANOW_SETUP_MAIN%' -UseBasicParsing"
+  "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-TimeZone -Id 'W. Europe Standard Time' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path 'I:\Apps\SalsaNOW\EasySetup' -Force | Out-Null; Invoke-WebRequest -Uri '$remoteSetupUrl' -OutFile '%SALSANOW_SETUP_MAIN%' -UseBasicParsing"
 )
 if exist "%SALSANOW_SETUP_MAIN%" (
-  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
+  start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup
 ) else if exist "%SALSANOW_SETUP_FALLBACK%" (
-  "$powerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup >> "I:\Apps\SalsaNOW\EasySetup\startup.log" 2>&1
+  start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup
 )
 $endMarker
 "@
@@ -548,6 +761,354 @@ function Repair-Git {
     }
 }
 
+function Test-GitHubCliInstall {
+    if (-not (Test-Path -LiteralPath $githubCliExecutable -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $output = (& $githubCliExecutable --version 2>$null | Select-Object -First 1)
+        return $output -match "^gh version $([regex]::Escape($githubCliVersion))(?:\s|$)"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Repair-GitHubCli {
+    if (Test-GitHubCliInstall) {
+        Write-SetupLog "Verified official GitHub CLI $githubCliVersion."
+        return
+    }
+
+    if (Get-Process -Name 'gh' -ErrorAction SilentlyContinue) {
+        throw 'GitHub CLI needs repair but is running. Close gh and run LimeNow again.'
+    }
+
+    Write-SetupLog "GitHub CLI is missing or incomplete; installing official portable gh $githubCliVersion."
+    $repairRoot = Join-Path $setupRoot ('github-cli-repair-' + [Guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $repairRoot 'github-cli.zip'
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
+    try {
+        Get-VerifiedDownload `
+            -Uri $githubCliArchiveUrl `
+            -Destination $archivePath `
+            -ExpectedHash $githubCliArchiveHash
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
+        $packageRoot = if (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe')) {
+            Get-Item -LiteralPath $extractPath
+        }
+        else {
+            Get-ChildItem -LiteralPath $extractPath -Directory |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'bin\gh.exe') } |
+                Select-Object -First 1
+        }
+        if (-not $packageRoot) {
+            throw 'The verified GitHub CLI archive has an unexpected layout.'
+        }
+
+        New-Item -ItemType Directory -Path $githubCliRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $packageRoot.FullName -Force |
+            Where-Object Name -NE 'Config' |
+            Copy-Item -Destination $githubCliRoot -Recurse -Force
+        if (-not (Test-GitHubCliInstall)) {
+            throw 'GitHub CLI verification failed after installation.'
+        }
+        Write-SetupLog "Installed/repaired official GitHub CLI $githubCliVersion."
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Protect-GitHubCliConfig {
+    New-Item -ItemType Directory -Path $githubCliConfigRoot -Force | Out-Null
+    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
+    $allow = [Security.AccessControl.AccessControlType]::Allow
+    $aclSucceeded = $true
+    $items = @(
+        Get-Item -LiteralPath $githubCliConfigRoot -Force
+    ) + @(
+        Get-ChildItem `
+            -LiteralPath $githubCliConfigRoot `
+            -Force `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+    )
+
+    foreach ($item in $items) {
+        try {
+            if ($item.PSIsContainer) {
+                $acl = [Security.AccessControl.DirectorySecurity]::new()
+                $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+                $propagation = [Security.AccessControl.PropagationFlags]::None
+                $acl.AddAccessRule(
+                    [Security.AccessControl.FileSystemAccessRule]::new(
+                        $userSid,
+                        $fullControl,
+                        $inheritance,
+                        $propagation,
+                        $allow
+                    )
+                )
+                $acl.AddAccessRule(
+                    [Security.AccessControl.FileSystemAccessRule]::new(
+                        $systemSid,
+                        $fullControl,
+                        $inheritance,
+                        $propagation,
+                        $allow
+                    )
+                )
+            }
+            else {
+                $acl = [Security.AccessControl.FileSecurity]::new()
+                $acl.AddAccessRule(
+                    [Security.AccessControl.FileSystemAccessRule]::new(
+                        $userSid,
+                        $fullControl,
+                        $allow
+                    )
+                )
+                $acl.AddAccessRule(
+                    [Security.AccessControl.FileSystemAccessRule]::new(
+                        $systemSid,
+                        $fullControl,
+                        $allow
+                    )
+                )
+            }
+            $acl.SetOwner($userSid)
+            $acl.SetAccessRuleProtection($true, $false)
+            Set-Acl -LiteralPath $item.FullName -AclObject $acl
+        }
+        catch {
+            $grantSuffix = if ($item.PSIsContainer) {
+                '(OI)(CI)F'
+            }
+            else {
+                'F'
+            }
+            $userGrant = "*$($userSid.Value):$grantSuffix"
+            $systemGrant = "*$($systemSid.Value):$grantSuffix"
+            try {
+                & icacls.exe `
+                    $item.FullName `
+                    /inheritance:r `
+                    /grant:r `
+                    $userGrant `
+                    $systemGrant `
+                    /Q `
+                    2>$null |
+                    Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'ACL recovery grant failed.'
+                }
+            }
+            catch {
+                $aclSucceeded = $false
+            }
+        }
+    }
+
+    if ($aclSucceeded) {
+        Write-SetupLog 'Restricted persistent GitHub CLI authentication storage to the current user and SYSTEM.'
+    }
+    else {
+        Write-SetupLog 'WARNING: The storage filesystem could not fully restrict GitHub CLI authentication files.'
+    }
+}
+
+function Ensure-GitHubCliLaunchers {
+    New-Item -ItemType Directory -Path $githubCliRoot, $githubCliConfigRoot -Force | Out-Null
+    $wrapper = @"
+@echo off
+set "GH_CONFIG_DIR=$githubCliConfigRoot"
+"$githubCliExecutable" %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $githubCliWrapper -Value $wrapper -Encoding ASCII
+
+    $loginScriptTemplate = @'
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:GH_CONFIG_DIR = '__GITHUB_CLI_CONFIG_ROOT__'
+$env:GH_BROWSER = ((Join-Path $env:SystemRoot 'System32\cmd.exe').Replace('\', '/') + ' /d /c rem')
+$env:NO_COLOR = '1'
+
+try {
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+}
+catch {}
+try {
+    $Host.UI.RawUI.WindowTitle = 'LimeNow GitHub CLI sign in'
+}
+catch {}
+
+function Wait-GitHubCliWindow {
+    [void](Read-Host 'Press Enter to close')
+}
+
+Write-Host ''
+Write-Host 'LimeNow GitHub CLI persistent sign in'
+Write-Host '====================================='
+Write-Host 'WARNING: GitHub CLI will store a reusable token in SalsaNOW persistent storage.'
+Write-Host 'Anyone with access to that storage may be able to use the same GitHub account access.'
+Write-Host ''
+
+$refreshExistingAuthorization = $false
+& '__GITHUB_CLI_EXECUTABLE__' auth status --hostname github.com *> $null
+if ($LASTEXITCODE -eq 0) {
+    $authMetadataJson = & '__GITHUB_CLI_EXECUTABLE__' auth status `
+        --hostname github.com `
+        --active `
+        --json hosts `
+        2>$null
+    $activeAccount = if ($LASTEXITCODE -eq 0) {
+        @((ConvertFrom-Json $authMetadataJson).hosts.'github.com')[0]
+    }
+    else {
+        $null
+    }
+    $activeScopes = if ($activeAccount) {
+        @(([string]$activeAccount.scopes) -split ',\s*')
+    }
+    else {
+        @()
+    }
+    if ($activeScopes -contains 'workflow') {
+        Write-Host 'GitHub CLI is already signed in with repository and workflow access:'
+        & '__GITHUB_CLI_EXECUTABLE__' auth status --hostname github.com
+        Write-Host ''
+        Wait-GitHubCliWindow
+        exit 0
+    }
+
+    $refreshExistingAuthorization = $true
+    Write-Host 'GitHub CLI is signed in but needs the workflow permission.'
+    Write-Host 'That permission lets Git push changes to GitHub Actions workflow files.'
+    Write-Host 'GitHub will ask you to approve the additional permission.'
+    Write-Host ''
+}
+
+# This compact offline QR encodes https://github.com/login/device. Each terminal
+# row represents two QR rows with Unicode half-block characters.
+$qrWidth = 29
+$qrRows = @(
+    '█▀▀▀▀▀█ █▄▀▄▄ ▄█▀█▀▀▀ █▀▀▀▀▀█'
+    '█ ███ █ ▄▀▀ █▀▀▀▄▄▀ ▀ █ ███ █'
+    '█ ▀▀▀ █   ▀█▀▀▄  ▄▄█▄ █ ▀▀▀ █'
+    '▀▀▀▀▀▀▀ █ ▀ ▀▄█ ▀▄▀▄▀ ▀▀▀▀▀▀▀'
+    '▀ ██▄▀▀█▄██▄█▀▀▄██▄▄▄ █▄▄▀ ▀█'
+    '  █ ▄▀▀▄ ▄ █ ▄██  █▄██▄▀▄ ▀▀▄'
+    '▄▀█▄▄█▀▀▄█▄▀ ▄  ▀█ █  ▄  ▀█▄▄'
+    '██▀▄▀▄▀▀▄▄ ▄ ▄▀▄  ███▄█▄▄ ▀█▀'
+    '  ▄▀  ▀ ▄▀  █▄    ▀▀▀  ▄▀█▄█'
+    '▀ █▀▀▄▀▄ ▄▀▀▀  ▄▄▄▄ ▀ ███ █'
+    ' ▀    ▀▀█▀▄ ██▄█▀▀▀ █▀▀▀███▄▄'
+    '█▀▀▀▀▀█ ██ ▀█▀  ▀ ▀▀█ ▀ ██ █'
+    '█ ███ █ ▄▀█▄▄▄██▄▀ ▄▀█▀██▄▀▄▀'
+    '█ ▀▀▀ █ ▀▀▄▄ █▄     █▄ █ ▄▀▄▀'
+    '▀▀▀▀▀▀▀ ▀ ▀ ▀▀▀   ▀▀▀▀▀    ▀'
+)
+$quietRow = ' ' * ($qrWidth + 8)
+
+Write-Host 'Scan this QR with your phone to open GitHub on that device:'
+foreach ($unused in 1..2) {
+    Write-Host $quietRow -ForegroundColor Black -BackgroundColor White
+}
+foreach ($row in $qrRows) {
+    $renderedRow = '    ' + $row.PadRight($qrWidth) + '    '
+    Write-Host $renderedRow -ForegroundColor Black -BackgroundColor White
+}
+foreach ($unused in 1..2) {
+    Write-Host $quietRow -ForegroundColor Black -BackgroundColor White
+}
+Write-Host ''
+Write-Host 'If you cannot scan it, open this URL on your phone or local computer:'
+Write-Host '__GITHUB_CLI_DEVICE_URL__'
+Write-Host ''
+Write-Host 'GitHub CLI will show an 8-character one-time code below.'
+Write-Host 'Enter that code on your other device and approve GitHub CLI there.'
+Write-Host 'No browser will open inside the GeForce NOW session.'
+Write-Host ''
+
+# Redirected stdin makes the pinned GitHub CLI use its headless device flow: it
+# prints the code, skips its local browser prompt, and immediately starts polling.
+if ($refreshExistingAuthorization) {
+    '' | & '__GITHUB_CLI_EXECUTABLE__' auth refresh --hostname github.com --scopes workflow --clipboard --insecure-storage
+}
+else {
+    '' | & '__GITHUB_CLI_EXECUTABLE__' auth login --hostname github.com --git-protocol https --web --scopes workflow --clipboard --insecure-storage
+}
+$loginExitCode = $LASTEXITCODE
+if ($loginExitCode -ne 0) {
+    Write-Host ''
+    Write-Host 'GitHub CLI authorization failed or was cancelled.'
+    Wait-GitHubCliWindow
+    exit $loginExitCode
+}
+
+Write-Host ''
+Write-Host 'GitHub CLI authorization succeeded and will persist across GFN machines.'
+& '__GITHUB_CLI_EXECUTABLE__' auth status --hostname github.com
+Write-Host ''
+Wait-GitHubCliWindow
+'@
+    $loginScript = $loginScriptTemplate.Replace(
+        '__GITHUB_CLI_CONFIG_ROOT__',
+        $githubCliConfigRoot.Replace("'", "''")
+    )
+    $loginScript = $loginScript.Replace(
+        '__GITHUB_CLI_EXECUTABLE__',
+        $githubCliExecutable.Replace("'", "''")
+    )
+    $loginScript = $loginScript.Replace(
+        '__GITHUB_CLI_DEVICE_URL__',
+        $githubCliDeviceUrl.Replace("'", "''")
+    )
+    [IO.File]::WriteAllText(
+        $githubCliLoginScript,
+        $loginScript,
+        [Text.UTF8Encoding]::new($true)
+    )
+
+    $powerShell = Resolve-LimeNowPowerShell
+    $loginLauncher = @"
+@echo off
+"$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$githubCliLoginScript"
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $githubCliLoginLauncher -Value $loginLauncher -Encoding ASCII
+    Write-SetupLog 'Verified persistent GitHub CLI command and QR device sign-in launchers.'
+}
+
+function Test-GitHubCliAuthentication {
+    & $githubCliWrapper auth status --hostname github.com *> $null
+    return $LASTEXITCODE -eq 0
+}
+
+function Ensure-GitHubCliAuthentication {
+    $hostsPath = Join-Path $githubCliConfigRoot 'hosts.yml'
+    if (-not (Test-Path -LiteralPath $hostsPath -PathType Leaf)) {
+        Write-SetupLog 'GitHub CLI is ready but not signed in. Use the GitHub CLI Sign In desktop shortcut.'
+        return
+    }
+
+    if (Test-GitHubCliAuthentication) {
+        Write-SetupLog 'Verified persistent GitHub CLI authentication.'
+    }
+    else {
+        Write-SetupLog 'WARNING: Stored GitHub CLI authentication could not be verified; use the sign-in shortcut to repair it.'
+    }
+}
+
 function Test-VSCodeInstall {
     $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
     $codeCommand = Join-Path $vscodeRoot 'bin\code.cmd'
@@ -646,20 +1207,26 @@ function Repair-WindowsTerminal {
     }
 }
 
+function Get-GitHubCliCredentialHelper {
+    $configRootForGit = $githubCliConfigRoot.Replace('\', '/')
+    $ghExecutableForGit = $githubCliExecutable.Replace('\', '/')
+    return "!f() { GH_CONFIG_DIR='$configRootForGit' '$ghExecutableForGit' auth git-credential `"`$@`"; }; f"
+}
+
 function Ensure-DeveloperEnvironment {
     New-Item -ItemType Directory -Path $npmGlobalRoot, $npmCacheRoot -Force | Out-Null
     $requiredPathEntries = @(
         $nodeRoot,
         $codexBinRoot,
         $npmGlobalRoot,
+        $githubCliRoot,
         (Join-Path $gitRoot 'cmd'),
         (Join-Path $vscodeRoot 'bin'),
         $terminalRoot
     )
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $obsoleteGhPath = Join-Path $limeNowAppsRoot 'GitHubCLI\bin'
-    $userParts = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
+    $userParts = @($userPath -split ';' | Where-Object { $_ })
     $newUserParts = @($requiredPathEntries)
     foreach ($part in $userParts) {
         if (-not ($newUserParts | Where-Object { $_ -eq $part })) {
@@ -671,7 +1238,7 @@ function Ensure-DeveloperEnvironment {
         [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
     }
 
-    $processParts = @($env:Path -split ';' | Where-Object { $_ -and $_ -ne $obsoleteGhPath })
+    $processParts = @($env:Path -split ';' | Where-Object { $_ })
     $newProcessParts = @($requiredPathEntries)
     foreach ($part in $processParts) {
         if (-not ($newProcessParts | Where-Object { $_ -eq $part })) {
@@ -683,10 +1250,28 @@ function Ensure-DeveloperEnvironment {
     $env:NODE_USE_SYSTEM_CA = '1'
     $env:NPM_CONFIG_PREFIX = $npmGlobalRoot
     $env:NPM_CONFIG_CACHE = $npmCacheRoot
+    $env:GH_CONFIG_DIR = $githubCliConfigRoot
+    $env:GH_NO_UPDATE_NOTIFIER = '1'
     [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', '1', 'User')
     [Environment]::SetEnvironmentVariable('NPM_CONFIG_PREFIX', $npmGlobalRoot, 'User')
     [Environment]::SetEnvironmentVariable('NPM_CONFIG_CACHE', $npmCacheRoot, 'User')
-    Write-SetupLog 'Verified persistent developer-tool PATH and Windows certificate-store support.'
+    [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', $githubCliConfigRoot, 'User')
+    [Environment]::SetEnvironmentVariable('GH_NO_UPDATE_NOTIFIER', '1', 'User')
+
+    $gitExecutable = Join-Path $gitRoot 'cmd\git.exe'
+    $credentialHelper = Get-GitHubCliCredentialHelper
+    foreach ($credentialHost in @('github.com', 'gist.github.com')) {
+        $credentialKey = "credential.https://$credentialHost.helper"
+        & $gitExecutable config --global --replace-all $credentialKey ''
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not reset the Git credential helper for $credentialHost."
+        }
+        & $gitExecutable config --global --add $credentialKey $credentialHelper
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not configure persistent GitHub CLI credentials for $credentialHost."
+        }
+    }
+    Write-SetupLog 'Verified persistent developer-tool PATH, GitHub CLI configuration, and Windows certificate-store support.'
 }
 
 function Test-CodexInstall {
@@ -745,26 +1330,11 @@ function Ensure-CodexStateManager {
     try {
         New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
         $candidate = Join-Path $repairRoot 'codex-state.ps1'
-        if (Test-Path -LiteralPath $localManager) {
-            Copy-Item -LiteralPath $localManager -Destination $candidate
-        }
-        else {
-            Invoke-WebRequest `
-                -Uri $codexStateManagerUrl `
-                -OutFile $candidate `
-                -UseBasicParsing `
-                -TimeoutSec 60
-        }
-
-        $parseErrors = $null
-        [Management.Automation.Language.Parser]::ParseFile(
-            $candidate,
-            [ref]$null,
-            [ref]$parseErrors
-        ) | Out-Null
-        if ($parseErrors.Count) {
-            throw 'The Codex state manager failed PowerShell syntax validation.'
-        }
+        Get-LimeNowManagedScriptCandidate `
+            -LocalPath $localManager `
+            -RemoteUrl $codexStateManagerUrl `
+            -CandidatePath $candidate `
+            -Description 'Codex state manager'
         Copy-IfChanged -Source $candidate -Destination $codexStateManager
     }
     finally {
@@ -828,6 +1398,7 @@ function Ensure-DeveloperCommandShims {
         'npx.cmd' = Join-Path $nodeRoot 'npx.cmd'
         'codex.cmd' = $codexWrapper
         'git.cmd' = Join-Path $gitRoot 'cmd\git.exe'
+        'gh.cmd' = $githubCliWrapper
         'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
         'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
     }
@@ -854,24 +1425,7 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, code, and wt command shims.'
-}
-
-function Remove-ObsoleteGitHubCli {
-    $shimRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
-    $ghShim = Join-Path $shimRoot 'gh.cmd'
-    if (Test-Path -LiteralPath $ghShim) {
-        $content = Get-Content -LiteralPath $ghShim -Raw -ErrorAction SilentlyContinue
-        if ($content -match 'LimeNow managed developer command shim') {
-            Remove-Item -LiteralPath $ghShim -Force
-        }
-    }
-
-    $oldGhRoot = Join-Path $limeNowAppsRoot 'GitHubCLI'
-    if (Test-Path -LiteralPath $oldGhRoot) {
-        Remove-Item -LiteralPath $oldGhRoot -Recurse -Force
-    }
-    Write-SetupLog 'Removed obsolete LimeNow GitHub CLI files without touching account data.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, GitHub CLI, code, and wt command shims.'
 }
 
 function Ensure-DeveloperDesktopShortcuts {
@@ -901,7 +1455,15 @@ function Ensure-DeveloperDesktopShortcuts {
     $terminalShortcut.IconLocation = "$terminalExecutable,0"
     $terminalShortcut.Save()
 
-    Write-SetupLog 'Verified persistent Visual Studio Code and Windows Terminal desktop shortcuts.'
+    $githubShortcut = $shell.CreateShortcut((Join-Path $desktop 'GitHub CLI Sign In.lnk'))
+    $githubShortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $githubShortcut.Arguments = "/d /c `"`"$githubCliLoginLauncher`"`""
+    $githubShortcut.WorkingDirectory = $documentsRoot
+    $githubShortcut.Description = 'Sign in to GitHub CLI with persistent LimeNow authentication'
+    $githubShortcut.IconLocation = "$githubCliExecutable,0"
+    $githubShortcut.Save()
+
+    Write-SetupLog 'Verified persistent Visual Studio Code, Windows Terminal, and GitHub CLI sign-in shortcuts.'
 }
 
 function Test-LimeSshInstall {
@@ -982,26 +1544,11 @@ function Ensure-LimeSshManager {
     try {
         New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
         $candidate = Join-Path $repairRoot 'remote-access.ps1'
-        if (Test-Path -LiteralPath $localManager) {
-            Copy-Item -LiteralPath $localManager -Destination $candidate
-        }
-        else {
-            Invoke-WebRequest `
-                -Uri $limeSshManagerUrl `
-                -OutFile $candidate `
-                -UseBasicParsing `
-                -TimeoutSec 60
-        }
-
-        $parseErrors = $null
-        [Management.Automation.Language.Parser]::ParseFile(
-            $candidate,
-            [ref]$null,
-            [ref]$parseErrors
-        ) | Out-Null
-        if ($parseErrors.Count) {
-            throw 'The LimeSSH remote-access manager failed PowerShell syntax validation.'
-        }
+        Get-LimeNowManagedScriptCandidate `
+            -LocalPath $localManager `
+            -RemoteUrl $limeSshManagerUrl `
+            -CandidatePath $candidate `
+            -Description 'LimeSSH remote-access manager'
         Copy-IfChanged -Source $candidate -Destination $limeSshManager
     }
     finally {
@@ -1031,7 +1578,8 @@ function Ensure-LimeSshRemoteAccess {
         $configPath = Join-Path $limeSshRoot 'config.json'
         if ($Startup) {
             if (Test-Path -LiteralPath $configPath) {
-                & $limeSshManager -Action Start -Startup -InstallRoot $limeSshRoot
+                & $limeSshManager -Action Start -Startup -InstallRoot $limeSshRoot | Out-Null
+                Write-SetupLog 'Verified configured LimeSSH remote access.'
             }
             return
         }
@@ -1274,15 +1822,31 @@ function Test-MicrosoftLoginTls {
 }
 
 Initialize-SetupStorage
+Show-StartupProgressHeader
 Write-SetupLog "LimeNow setup started. StartupMode=$Startup"
 
+$setupSucceeded = $false
+$startupHandedOff = $false
 try {
     Ensure-TimeZone
+    if ($Startup -and -not $SkipStartupUpdate) {
+        $updateStatus = Update-LimeNowSetup
+        if ($updateStatus -eq 'Updated') {
+            & $canonicalScript -Startup -SkipStartupUpdate -RefreshManagedScripts
+            $startupHandedOff = $true
+            return
+        }
+        if ($updateStatus -eq 'Current') {
+            $RefreshManagedScripts = $true
+        }
+    }
     Ensure-SetupCopies
     Ensure-StartupHook
-    Remove-ObsoleteGitHubCli
     Repair-NodeAndNpm
     Repair-Git
+    Repair-GitHubCli
+    Protect-GitHubCliConfig
+    Ensure-GitHubCliLaunchers
     Repair-VSCode
     Repair-WindowsTerminal
     Ensure-DeveloperEnvironment
@@ -1290,6 +1854,7 @@ try {
     Ensure-CodexLauncher
     Ensure-DeveloperCommandShims
     Ensure-DeveloperDesktopShortcuts
+    Ensure-GitHubCliAuthentication
     Ensure-LimeSshRemoteAccess
     Ensure-ModrinthPersistentData
     Repair-ModrinthLauncher
@@ -1299,10 +1864,16 @@ try {
         Test-MicrosoftLoginTls
     }
     Write-SetupLog 'LimeNow setup completed successfully.'
+    $setupSucceeded = $true
 }
 catch {
     Write-SetupLog "ERROR: $($_.Exception.Message)"
     if (-not $Startup) {
         throw
+    }
+}
+finally {
+    if (-not $startupHandedOff) {
+        Show-StartupProgressResult -Succeeded $setupSucceeded
     }
 }

@@ -45,8 +45,11 @@ $managedBlock = $setupSource.Substring($managedBlockStart, $managedBlockEnd - $m
 if ($managedBlock -match '(?i)\bPowerShell\.exe\b') {
     throw 'The generated startup block still invokes blocked legacy PowerShell.'
 }
-if (-not $managedBlock.Contains('"$powerShell" -NoProfile -NonInteractive')) {
+if (-not $managedBlock.Contains('start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile')) {
     throw 'The generated startup block does not use the resolved PowerShell host.'
+}
+if ($managedBlock.Contains('-NonInteractive') -or $managedBlock.Contains('startup.log')) {
+    throw 'The generated startup block still hides live setup progress.'
 }
 
 $mainStart = $setupSource.LastIndexOf('try {')
@@ -57,4 +60,4 @@ if ($mainBlock.IndexOf('Ensure-QwertzKeyboard') -lt
     throw 'QWERTZ verification still runs before the startup environment settles.'
 }
 
-Write-Output 'Keyboard layout regression test passed: native foreground verification, bounded retry, resolved startup host, late startup ordering'
+Write-Output 'Keyboard layout regression test passed: native foreground verification, bounded retry, visible resolved startup host, late startup ordering'

@@ -198,17 +198,8 @@ try {
     if (-not $codexLauncher.Contains('"$powerShell" -NoLogo -NoProfile')) {
         throw 'The Codex launcher does not use its resolved PowerShell host.'
     }
-    $removalStart = $setupSource.IndexOf('function Remove-ObsoleteGitHubCli')
-    $removalEnd = $setupSource.IndexOf(
-        'function Ensure-DeveloperDesktopShortcuts',
-        $removalStart
-    )
-    if ($removalStart -lt 0 -or $removalEnd -le $removalStart) {
-        throw 'Could not locate the managed GitHub CLI removal block.'
-    }
-    $removalBlock = $setupSource.Substring($removalStart, $removalEnd - $removalStart)
-    if ($removalBlock -match '(?i)codex') {
-        throw 'The GitHub CLI cleanup block still removes or mentions Codex.'
+    if ($setupSource.Contains('function Remove-ObsoleteGitHubCli')) {
+        throw 'Setup still contains the obsolete GitHub CLI removal path.'
     }
 
     $replacementHome = Join-Path $testRoot 'replacement-home'
