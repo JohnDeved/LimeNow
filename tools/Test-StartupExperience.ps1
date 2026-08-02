@@ -201,7 +201,7 @@ echo preserve-this-command
     Ensure-StartupHook
     $hook = Get-Content -LiteralPath $startupBatch -Raw
     foreach ($requiredText in @(
-        'start "LimeNow setup" /wait "C:\Tools\PowerShell\pwsh.exe"',
+        '"C:\Tools\PowerShell\pwsh.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup',
         '-File "%SALSANOW_SETUP_MAIN%" -Startup',
         '-File "%SALSANOW_SETUP_FALLBACK%" -Startup',
         'echo preserve-this-command'
@@ -210,9 +210,9 @@ echo preserve-this-command
             throw "The generated startup hook is missing: $requiredText"
         }
     }
-    foreach ($forbiddenText in @('PowerShell.exe', '-NonInteractive', 'startup.log', 'obsolete LimeNow block')) {
+    foreach ($forbiddenText in @('PowerShell.exe', 'start "LimeNow setup"', '-NonInteractive', 'startup.log', 'obsolete LimeNow block')) {
         if ($hook.Contains($forbiddenText)) {
-            throw "The generated startup hook contains obsolete hidden-launch behavior: $forbiddenText"
+            throw "The generated startup hook contains redundant or obsolete launch behavior: $forbiddenText"
         }
     }
     if (([regex]::Matches($hook, 'REM === SALSANOW EASY SETUP BEGIN ===')).Count -ne 1) {
@@ -231,7 +231,7 @@ echo preserve-this-command
         }
     }
 
-    Write-Output 'Startup experience test passed: SafeAutoUpdate, OfflineFallback, PreviousVersionBackup, ManagedScriptRefresh, VisiblePwshWindow, PreservedStartupCommands, ProgressUX'
+    Write-Output 'Startup experience test passed: SafeAutoUpdate, OfflineFallback, PreviousVersionBackup, ManagedScriptRefresh, SingleSetupWindow, PreservedStartupCommands, ProgressUX'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

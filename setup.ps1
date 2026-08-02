@@ -398,9 +398,9 @@ if not exist "%SALSANOW_SETUP_MAIN%" if not exist "%SALSANOW_SETUP_FALLBACK%" (
   "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-TimeZone -Id 'W. Europe Standard Time' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path 'I:\Apps\SalsaNOW\EasySetup' -Force | Out-Null; Invoke-WebRequest -Uri '$remoteSetupUrl' -OutFile '%SALSANOW_SETUP_MAIN%' -UseBasicParsing"
 )
 if exist "%SALSANOW_SETUP_MAIN%" (
-  start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup
+  "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup
 ) else if exist "%SALSANOW_SETUP_FALLBACK%" (
-  start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup
+  "$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_FALLBACK%" -Startup
 )
 $endMarker
 "@
@@ -487,8 +487,14 @@ public static class LimeNowKeyboardNative
 function Convert-LimeNowKeyboardHandleToId {
     param([Parameter(Mandatory)][IntPtr]$Handle)
 
-    $value = $Handle.ToInt64() -band 0xffffffff
-    return '{0:X8}' -f [UInt32]$value
+    # HKL values can be sign-extended when returned as IntPtr. Reading the
+    # low DWORD from the native byte representation avoids PowerShell 7's
+    # overflow when a valid layout handle has its high bit set.
+    $value = [BitConverter]::ToUInt32(
+        [BitConverter]::GetBytes($Handle.ToInt64()),
+        0
+    )
+    return '{0:X8}' -f $value
 }
 
 function Get-LimeNowForegroundKeyboardLayout {
@@ -529,13 +535,60 @@ function Get-LimeNowDefaultInputMethodTip {
     }
 }
 
+function Get-LimeNowUserLanguageList {
+    # Get-WinUserLanguageList returns a generic List object under PowerShell 7.
+    # Explicit enumeration keeps the individual WinUserLanguage objects intact
+    # for filtering and for Set-WinUserLanguageList's typed parameter.
+    $rawLanguages = Get-WinUserLanguageList -ErrorAction Stop
+    return @(
+        foreach ($language in $rawLanguages) {
+            $language
+        }
+    )
+}
+
+function New-LimeNowTypedUserLanguageList {
+    param([Parameter(Mandatory)][object[]]$Languages)
+
+    $languageList = [System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]]::new()
+    foreach ($language in $Languages) {
+        [void]$languageList.Add($language)
+    }
+    return ,$languageList
+}
+
+function Ensure-LimeNowTaskbarInputIndicator {
+    try {
+        # The default language-bar mode is the modern per-user input indicator,
+        # which is the selectable language menu in the taskbar. The legacy
+        # desktop language bar hides that indicator on Windows 10/11.
+        Set-WinLanguageBarOption -ErrorAction Stop
+
+        # Keep the taskbar/docked preference for Windows builds that still read
+        # this CTF value. In modern mode the shell owns the visual indicator.
+        $langBarKey = 'HKCU:\Software\Microsoft\CTF\LangBar'
+        New-Item -Path $langBarKey -Force | Out-Null
+        New-ItemProperty `
+            -Path $langBarKey `
+            -Name 'ShowStatus' `
+            -PropertyType DWord `
+            -Value 4 `
+            -Force | Out-Null
+
+        Write-SetupLog 'Enabled the Windows taskbar keyboard-layout input indicator.'
+    }
+    catch {
+        Write-SetupLog "WARNING: Could not enable the Windows taskbar keyboard-layout input indicator. $($_.Exception.Message)"
+    }
+}
+
 function Set-QwertzKeyboardState {
     param(
         [Parameter(Mandatory)][string]$LanguageTag,
         [Parameter(Mandatory)][string]$InputTip
     )
 
-    $languages = @(Get-WinUserLanguageList)
+    $languages = @(Get-LimeNowUserLanguageList)
     $german = $languages |
         Where-Object LanguageTag -eq $LanguageTag |
         Select-Object -First 1
@@ -551,13 +604,38 @@ function Set-QwertzKeyboardState {
         $german.InputMethodTips.Add($InputTip)
     }
 
+    # Keep a second, familiar layout available so Windows has a real choice to
+    # expose in the taskbar menu. Existing languages and input methods remain
+    # untouched and are kept after German and English.
+    $englishLanguageTag = 'en-US'
+    $englishInputTip = '0409:00000409'
+    $english = $languages |
+        Where-Object LanguageTag -eq $englishLanguageTag |
+        Select-Object -First 1
+    if (-not $english) {
+        $english = New-WinUserLanguageList $englishLanguageTag | Select-Object -First 1
+    }
+    $englishInputMethods = @($english.InputMethodTips | ForEach-Object { [string]$_ })
+    $hasEnglishKeyboard = $englishInputMethods -contains $englishInputTip
+    if (-not $hasEnglishKeyboard) {
+        $english.InputMethodTips.Add($englishInputTip)
+    }
+
     $orderedLanguages = @($german) + @(
-        $languages | Where-Object LanguageTag -ne $LanguageTag
+        $english
+    ) + @(
+        $languages | Where-Object {
+            $_.LanguageTag -ne $LanguageTag -and
+            $_.LanguageTag -ne $englishLanguageTag
+        }
     )
     $currentOrder = (@($languages | ForEach-Object LanguageTag) -join '|')
     $desiredOrder = (@($orderedLanguages | ForEach-Object LanguageTag) -join '|')
-    if ($currentOrder -ne $desiredOrder -or -not $hasGermanKeyboard) {
-        Set-WinUserLanguageList -LanguageList $orderedLanguages -Force
+    if ($currentOrder -ne $desiredOrder -or
+        -not $hasGermanKeyboard -or
+        -not $hasEnglishKeyboard) {
+        $typedLanguageList = New-LimeNowTypedUserLanguageList -Languages $orderedLanguages
+        Set-WinUserLanguageList -LanguageList $typedLanguageList -Force
     }
 
     Set-WinDefaultInputMethodOverride -InputTip $InputTip
@@ -588,7 +666,7 @@ function Set-QwertzKeyboardState {
 function Get-QwertzKeyboardState {
     param([Parameter(Mandatory)][string]$LanguageTag)
 
-    $languages = @(Get-WinUserLanguageList)
+    $languages = @(Get-LimeNowUserLanguageList)
     $defaultInputTip = Get-LimeNowDefaultInputMethodTip
     $foreground = Get-LimeNowForegroundKeyboardLayout
     return [pscustomobject]@{
@@ -616,6 +694,7 @@ function Ensure-QwertzKeyboard {
             if ($lastState.FirstLanguageTag -eq $languageTag -and
                 $lastState.DefaultIsQwertz -and
                 $lastState.ActiveIsQwertz) {
+                Ensure-LimeNowTaskbarInputIndicator
                 Write-SetupLog "Verified German QWERTZ after $attempt attempt(s); active layout $($lastState.ActiveLayoutId)."
                 return
             }
@@ -637,6 +716,7 @@ function Ensure-QwertzKeyboard {
 
     $defaultInputTip = if ($lastState) { $lastState.DefaultInputTip } else { $null }
     $activeLayoutId = if ($lastState) { $lastState.ActiveLayoutId } else { $null }
+    Ensure-LimeNowTaskbarInputIndicator
     Write-SetupLog "WARNING: German QWERTZ was not verified after $maxAttempts attempt(s); default=$defaultInputTip active=$activeLayoutId reason=$lastError"
 }
 

@@ -19,8 +19,11 @@ authentication on GeForce NOW machines.
 - fixes SalsaNOW's Windows timezone and NVIDIA proxy-certificate validation;
 - applies German QWERTZ after the startup environment settles, with bounded
   retries and foreground-layout verification;
+- enables the Windows taskbar input indicator and keeps an English-US layout
+  available alongside German QWERTZ for quick keyboard switching;
 - installs a managed block in SalsaNOW's `I:\Apps\SalsaNOW\StartupBatch.bat`;
-- opens a temporary PowerShell 7 window with live setup progress on every session;
+- shows live setup progress in the existing session setup console without
+  opening a redundant second command window;
 - checks GitHub for LimeNow updates at launch and keeps the last known-good setup
   when the update is unavailable or invalid;
 - preserves unrelated commands already present in `StartupBatch.bat`;

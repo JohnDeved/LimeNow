@@ -6,11 +6,21 @@ $setupSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\setup.ps1')
 
 foreach ($requiredText in @(
     'function Ensure-LimeNowKeyboardNativeType',
+    'function Convert-LimeNowKeyboardHandleToId',
     'function Get-LimeNowForegroundKeyboardLayout',
+    'function Get-LimeNowUserLanguageList',
+    'function New-LimeNowTypedUserLanguageList',
+    'function Ensure-LimeNowTaskbarInputIndicator',
     'function Set-QwertzKeyboardState',
     'function Get-QwertzKeyboardState',
     'function Ensure-QwertzKeyboard',
     'Set-WinDefaultInputMethodOverride -InputTip $InputTip',
+    'Set-WinLanguageBarOption -ErrorAction Stop',
+    "-Name 'ShowStatus'",
+    "-Value 4",
+    "`$englishLanguageTag = 'en-US'",
+    "`$englishInputTip = '0409:00000409'",
+    '[BitConverter]::ToUInt32',
     'WmInputLangChangeRequest',
     'Start-Sleep -Seconds $retryDelaySeconds',
     'ActiveIsQwertz'
@@ -45,11 +55,13 @@ $managedBlock = $setupSource.Substring($managedBlockStart, $managedBlockEnd - $m
 if ($managedBlock -match '(?i)\bPowerShell\.exe\b') {
     throw 'The generated startup block still invokes blocked legacy PowerShell.'
 }
-if (-not $managedBlock.Contains('start "LimeNow setup" /wait "$powerShell" -NoLogo -NoProfile')) {
-    throw 'The generated startup block does not use the resolved PowerShell host.'
+if (-not $managedBlock.Contains('"$powerShell" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SALSANOW_SETUP_MAIN%" -Startup')) {
+    throw 'The generated startup block does not invoke the resolved PowerShell host directly.'
 }
-if ($managedBlock.Contains('-NonInteractive') -or $managedBlock.Contains('startup.log')) {
-    throw 'The generated startup block still hides live setup progress.'
+if ($managedBlock.Contains('start "LimeNow setup"') -or
+    $managedBlock.Contains('-NonInteractive') -or
+    $managedBlock.Contains('startup.log')) {
+    throw 'The generated startup block still creates a redundant or hidden setup window.'
 }
 
 $mainStart = $setupSource.LastIndexOf('try {')
@@ -60,4 +72,4 @@ if ($mainBlock.IndexOf('Ensure-QwertzKeyboard') -lt
     throw 'QWERTZ verification still runs before the startup environment settles.'
 }
 
-Write-Output 'Keyboard layout regression test passed: native foreground verification, bounded retry, visible resolved startup host, late startup ordering'
+Write-Output 'Keyboard layout regression test passed: typed language-list repair, selectable taskbar indicator, native foreground verification, bounded retry, visible resolved startup host, late startup ordering'
