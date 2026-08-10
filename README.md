@@ -32,7 +32,8 @@ authentication on GeForce NOW machines.
 ### Development tools
 
 - installs a persistent official Node.js LTS build with npm and npx;
-- installs and repairs the official OpenAI Codex CLI;
+- installs, verifies, and keeps the official OpenAI Codex CLI on its latest
+  stable release when the registry is reachable;
 - installs portable Git for Windows;
 - installs the official GitHub CLI (`gh`) as a checksum-pinned portable tool;
 - installs official Visual Studio Code in portable mode, including the `code` CLI;
@@ -133,7 +134,11 @@ syntax validation before it atomically replaces the installed copy. The prior
 copy is retained as `SalsaNOW-EasySetup.ps1.previous`.
 
 After the setup is verified, LimeNow also refreshes its Codex state manager and
-LimeSSH manager. If GitHub is unavailable or any downloaded script is invalid,
+its LimeSSH manager, then checks the npm registry for the latest stable Codex
+CLI. It updates Codex on
+the next setup run when a newer release is available; if the session is offline
+or Codex is still running, it keeps the usable installation and retries later.
+If GitHub is unavailable or any downloaded script is invalid,
 the session continues with the installed known-good files. The progress window
 closes automatically after showing the result. Automatic updates trust code
 published to this repository's `main` branch over HTTPS.

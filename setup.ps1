@@ -19,7 +19,8 @@ $codexBinRoot = Join-Path $codexRoot 'bin'
 $codexStateManager = Join-Path $codexRoot 'codex-state.ps1'
 $codexStateManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/codex-state.ps1'
 $codexWrapper = Join-Path $codexBinRoot 'codex.cmd'
-$codexVersion = '0.145.0'
+$codexVersion = '0.147.0'
+$codexRegistryUrl = 'https://registry.npmjs.org/@openai%2fcodex/latest'
 $nodeVersion = 'v24.18.0'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
 $gitRoot = Join-Path $limeNowAppsRoot 'Git'
@@ -1354,39 +1355,96 @@ function Ensure-DeveloperEnvironment {
     Write-SetupLog 'Verified persistent developer-tool PATH, GitHub CLI configuration, and Windows certificate-store support.'
 }
 
-function Test-CodexInstall {
+function Get-InstalledCodexVersion {
     $codexCommand = Join-Path $npmGlobalRoot 'codex.cmd'
     $packageManifest = Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
     if (-not (Test-Path -LiteralPath $codexCommand) -or
         -not (Test-Path -LiteralPath $packageManifest)) {
-        return $false
+        return $null
     }
 
     try {
-        $versionOutput = (& $codexCommand --version 2>$null | Select-Object -First 1)
         $manifest = Get-Content -LiteralPath $packageManifest -Raw | ConvertFrom-Json
-        return $manifest.version -eq $codexVersion -and
-            $versionOutput -eq "codex-cli $codexVersion"
+        $version = [string]$manifest.version
+        if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            return $null
+        }
+        $versionOutput = (& $codexCommand --version 2>$null | Select-Object -First 1)
+        if ($versionOutput -ne "codex-cli $version") {
+            return $null
+        }
+        return $version
     }
     catch {
-        return $false
+        return $null
+    }
+}
+
+function Test-CodexInstall {
+    param([Parameter(Mandatory)][string]$ExpectedVersion)
+
+    return (Get-InstalledCodexVersion) -eq $ExpectedVersion
+}
+
+function Get-LatestCodexVersion {
+    try {
+        $metadata = Invoke-RestMethod `
+            -Uri $codexRegistryUrl `
+            -Headers @{ 'Cache-Control' = 'no-cache'; 'User-Agent' = 'LimeNow-Codex-Updater' } `
+            -TimeoutSec 30
+        $latestVersion = [string]$metadata.version
+        if ($latestVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "The npm registry returned an invalid stable Codex version: $latestVersion"
+        }
+        Write-SetupLog "Checked npm for the latest stable Codex CLI: $latestVersion."
+        return $latestVersion
+    }
+    catch {
+        Write-SetupLog "Codex update check unavailable; keeping the installed version when it is usable. $($_.Exception.Message)"
+        return $null
     }
 }
 
 function Repair-CodexCli {
-    if (Test-CodexInstall) {
-        $manifest = Get-Content -LiteralPath (
-            Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
-        ) -Raw | ConvertFrom-Json
-        Write-SetupLog "Verified official Codex CLI $($manifest.version)."
+    $installedVersion = Get-InstalledCodexVersion
+    $latestVersion = Get-LatestCodexVersion
+    if (-not $latestVersion) {
+        if ($installedVersion) {
+            Write-SetupLog "Verified usable official Codex CLI $installedVersion; update will retry on the next online setup."
+            return
+        }
+        $latestVersion = $codexVersion
+    }
+
+    if ([version]$latestVersion -lt [version]$codexVersion) {
+        Write-SetupLog "The registry reported older Codex CLI $latestVersion; using the known-good floor $codexVersion."
+        $latestVersion = $codexVersion
+    }
+    if ($installedVersion -and [version]$latestVersion -lt [version]$installedVersion) {
+        Write-SetupLog "Verified official Codex CLI $installedVersion; refusing to downgrade to registry version $latestVersion."
         return
     }
 
+    if ($installedVersion -eq $latestVersion) {
+        Write-SetupLog "Verified official Codex CLI $installedVersion (latest stable release)."
+        return
+    }
+
+    if (Get-Process -Name 'codex' -ErrorAction SilentlyContinue) {
+        if ($installedVersion) {
+            Write-SetupLog "Codex CLI $installedVersion is currently running; update deferred until the next setup after Codex exits."
+            return
+        }
+        throw 'Codex CLI needs installation but a Codex process is running. Close Codex and run LimeNow again.'
+    }
+
     $npmCommand = Join-Path $nodeRoot 'npm.cmd'
-    Write-SetupLog 'Codex CLI is missing or incomplete; installing official @openai/codex.'
-    & $npmCommand install --global "@openai/codex@$codexVersion" `
+    $action = if ($installedVersion) { 'updating' } else { 'installing' }
+    Write-SetupLog "Codex CLI is ${action}: official @openai/codex@$latestVersion."
+    & $npmCommand install --global "@openai/codex@$latestVersion" `
         --prefix $npmGlobalRoot `
         --cache $npmCacheRoot `
+        --offline=false `
         --no-audit `
         --no-fund `
         --loglevel error
@@ -1394,14 +1452,11 @@ function Repair-CodexCli {
     if (-not $npmSucceeded) {
         throw 'npm failed to install @openai/codex.'
     }
-    if (-not (Test-CodexInstall)) {
+    if (-not (Test-CodexInstall -ExpectedVersion $latestVersion)) {
         throw 'Codex CLI verification failed after npm installation.'
     }
 
-    $manifest = Get-Content -LiteralPath (
-        Join-Path $npmGlobalRoot 'node_modules\@openai\codex\package.json'
-    ) -Raw | ConvertFrom-Json
-    Write-SetupLog "Installed/repaired official Codex CLI $($manifest.version)."
+    Write-SetupLog "Installed/repaired official Codex CLI $latestVersion."
 }
 
 function Ensure-CodexStateManager {
@@ -1805,21 +1860,48 @@ function Ensure-ModrinthPersistentData {
             $targetProbe = Join-Path $modrinthDataRoot $probeName
             $sourceProbe = Join-Path $modrinthAppData $probeName
             $probeValue = [Guid]::NewGuid().ToString('N')
+            $probeCompleted = $false
             try {
                 Set-Content -LiteralPath $targetProbe -Value $probeValue -Encoding ASCII -NoNewline
-                if (-not (Test-Path -LiteralPath $sourceProbe) -or
-                    (Get-Content -LiteralPath $sourceProbe -Raw) -ne $probeValue) {
-                    $reportedTarget = @($sourceItem.Target)[0]
-                    throw "Modrinth app data points to an unexpected junction target: $reportedTarget"
-                }
+                $probeCompleted = (Test-Path -LiteralPath $sourceProbe) -and
+                    (Get-Content -LiteralPath $sourceProbe -Raw) -eq $probeValue
+            }
+            catch {
+                # SalsaNOW may make the persistent data directory read-only while
+                # Modrinth is closing. A read-only target check is still safe when
+                # the existing link names the expected data directory.
+                $probeCompleted = $false
             }
             finally {
                 if (Test-Path -LiteralPath $targetProbe) {
                     Remove-Item -LiteralPath $targetProbe -Force
                 }
             }
-            Write-SetupLog 'Verified persistent Modrinth app-data junction.'
-            return
+            if ($probeCompleted) {
+                Write-SetupLog 'Verified persistent Modrinth app-data junction.'
+                return
+            }
+
+            $reportedTarget = ([string](@($sourceItem.Target)[0])).TrimEnd('\', '/')
+            if ($reportedTarget -match '(?i)^ice\\harddiskvolume') {
+                # PowerShell can omit the leading ``\\dev`` when displaying a
+                # device-namespace symbolic-link target under constrained mode.
+                $reportedTarget = '\dev' + $reportedTarget
+            }
+            $expectedTargetSuffix = ([IO.Path]::GetFullPath($modrinthDataRoot)).Substring(2).TrimEnd('\', '/')
+            $readOnlyTargetMatches = $reportedTarget.EndsWith(
+                $expectedTargetSuffix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and (
+                $reportedTarget -eq [IO.Path]::GetFullPath($modrinthDataRoot) -or
+                $reportedTarget -match '(?i)(?:^|\\)device\\harddiskvolume\d+\\'
+            )
+            if ($readOnlyTargetMatches) {
+                Write-SetupLog 'Verified persistent Modrinth app-data link using its read-only target metadata.'
+                return
+            }
+
+            throw "Modrinth app data points to an unexpected junction target: $reportedTarget"
         }
 
         if (Get-Process -Name 'Modrinth App' -ErrorAction SilentlyContinue) {

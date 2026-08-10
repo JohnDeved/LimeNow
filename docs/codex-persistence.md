@@ -1,15 +1,18 @@
 # Codex persistence and security
 
-LimeNow installs the pinned official `@openai/codex@0.145.0` npm package under
-`I:\Apps\LimeNow\NpmGlobal` and places its managed `codex` wrapper before the
-npm package directory on `PATH`. The wrapper prepares a temporary
+LimeNow installs the official stable `@openai/codex` npm package under
+`I:\Apps\LimeNow\NpmGlobal` and checks the npm registry during each setup run.
+The known-good fallback is currently `0.147.0`; an unavailable registry leaves
+a usable installed version in place and retries on the next online setup. The
+managed `codex` wrapper is placed before the npm package directory on `PATH`.
+The wrapper prepares a temporary
 `%USERPROFILE%\.codex` home, launches the official CLI, and synchronizes only
 the state verified below.
 
-## Verified state for Codex CLI 0.145.0
+## Verified state for Codex CLI 0.147.0
 
 The implementation was checked against the installed Windows package and the
-matching `rust-v0.145.0` OpenAI Codex source:
+matching `rust-v0.147.0` OpenAI Codex source:
 
 | Purpose               | Temporary Codex path | Persistent LimeNow path      | Handling                                              |
 | --------------------- | -------------------- | ---------------------------- | ----------------------------------------------------- |
@@ -29,7 +32,7 @@ absolute path. It falls back to the current PowerShell host only when PowerShell
 7 is unavailable. This keeps the managed Codex launcher usable on GFN images
 that block legacy Windows PowerShell while preserving compatibility elsewhere.
 
-Codex 0.145.0 discovers and resumes conversations from rollout files under
+Codex 0.147.0 discovers and resumes conversations from rollout files under
 `sessions`. Its `state_5.sqlite` database indexes those rollouts and can
 backfill from them, so LimeNow intentionally lets that database be recreated on
 each temporary machine. This avoids persisting SQLite lock/WAL files and
