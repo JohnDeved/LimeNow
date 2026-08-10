@@ -169,8 +169,11 @@ try {
     $setupSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\setup.ps1') -Raw
     foreach ($requiredSetupText in @(
         'function Repair-CodexCli',
+        'function Get-LatestCodexVersion',
         'function Ensure-CodexLauncher',
         'function Resolve-LimeNowPowerShell',
+        'registry.npmjs.org/@openai%2fcodex/latest',
+        '--offline=false',
         "'codex.cmd' = `$codexWrapper",
         'Repair-CodexCli',
         'Ensure-CodexLauncher',
