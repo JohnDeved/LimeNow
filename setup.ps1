@@ -812,19 +812,28 @@ function Get-LimeNowInstalledVersion {
                 foreach ($relativePath in @('npm.cmd', 'npx.cmd', 'node_modules\npm\package.json')) {
                     if (-not (Test-Path -LiteralPath (Join-Path $Root $relativePath) -PathType Leaf)) { return $null }
                 }
-                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
-                if ($LASTEXITCODE -eq 0 -and $output -match '^v\d+\.\d+\.\d+$') { return [string]$output }
+                # Let the native process finish before inspecting its exit code.
+                $versionOutput = @(& $ExecutablePath --version 2>$null)
+                $versionExitCode = $LASTEXITCODE
+                $output = [string]($versionOutput | Select-Object -First 1)
+                if ($versionExitCode -eq 0 -and $output -match '^v\d+\.\d+\.\d+$') { return [string]$output }
             }
             'Git' {
                 if (-not (Test-Path -LiteralPath (Join-Path $Root 'usr\bin\sh.exe') -PathType Leaf)) { return $null }
-                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
-                if ($LASTEXITCODE -eq 0 -and $output -match '^git version (?<version>\d+\.\d+\.\d+\.windows\.\d+)$') {
+                # Let the native process finish before inspecting its exit code.
+                $versionOutput = @(& $ExecutablePath --version 2>$null)
+                $versionExitCode = $LASTEXITCODE
+                $output = [string]($versionOutput | Select-Object -First 1)
+                if ($versionExitCode -eq 0 -and $output -match '^git version (?<version>\d+\.\d+\.\d+\.windows\.\d+)$') {
                     return $Matches.version
                 }
             }
             'GitHubCli' {
-                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
-                if ($LASTEXITCODE -eq 0 -and $output -match '^gh version (?<version>\d+\.\d+\.\d+)(?:\s|$)') {
+                # Let the native process finish before inspecting its exit code.
+                $versionOutput = @(& $ExecutablePath --version 2>$null)
+                $versionExitCode = $LASTEXITCODE
+                $output = [string]($versionOutput | Select-Object -First 1)
+                if ($versionExitCode -eq 0 -and $output -match '^gh version (?<version>\d+\.\d+\.\d+)(?:\s|$)') {
                     return $Matches.version
                 }
             }

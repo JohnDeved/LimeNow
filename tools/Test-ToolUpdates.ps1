@@ -19,7 +19,7 @@ foreach ($functionName in @(
     'Get-LatestGitHubCliRelease', 'Get-LatestVSCodeRelease',
     'Get-LatestWindowsTerminalRelease', 'Test-LimeNowToolRunning',
     'Invoke-LimeNowToolUpdate', 'Assert-LimeNowNoPendingToolRecovery', 'Get-LimeNowUpdateMutexName',
-    'Move-LimeNowPath', 'Install-LimeNowStagedDirectory'
+    'Move-LimeNowPath', 'Install-LimeNowStagedDirectory', 'Get-LimeNowInstalledVersion'
 )) {
     $definition = $setupAst.Find({
         param($node)
@@ -175,6 +175,35 @@ $verifyCandidate = {
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     $script:toolRoot = Join-Path $testRoot 'managed-tool'
+    $onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+    $nativeProbe = Join-Path $testRoot $(if ($onWindows) { 'fake-gh.cmd' } else { 'fake-gh.sh' })
+    $nativeSource = if ($onWindows) {
+        "@echo off`r`necho gh version 2.102.0`r`necho fixture release details`r`nexit /b __EXIT__`r`n"
+    }
+    else {
+        "#!/bin/sh`necho 'gh version 2.102.0'`necho 'fixture release details'`nexit __EXIT__`n"
+    }
+    $previousExitCode = $global:LASTEXITCODE
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    try {
+        $PSNativeCommandUseErrorActionPreference = $false
+        Set-Content -LiteralPath $nativeProbe -Value $nativeSource.Replace('__EXIT__', '19') -Encoding ASCII
+        if (-not $onWindows) {
+            & chmod +x $nativeProbe
+            if ($LASTEXITCODE -ne 0) { throw 'The native version probe fixture could not be made executable.' }
+        }
+        & $nativeProbe *> $null
+        Assert-Equal $LASTEXITCODE 19 'The native probe did not seed a failing exit code.'
+        Set-Content -LiteralPath $nativeProbe -Value $nativeSource.Replace('__EXIT__', '0') -Encoding ASCII
+        Assert-Equal (Get-LimeNowInstalledVersion -Tool GitHubCli -Root $testRoot -ExecutablePath $nativeProbe) '2.102.0' 'A successful native version probe inherited an earlier exit code.'
+        Set-Content -LiteralPath $nativeProbe -Value $nativeSource.Replace('__EXIT__', '23') -Encoding ASCII
+        Assert-Equal (Get-LimeNowInstalledVersion -Tool GitHubCli -Root $testRoot -ExecutablePath $nativeProbe) $null 'A failing native probe was accepted because it printed a matching version.'
+    }
+    finally {
+        $global:LASTEXITCODE = $previousExitCode
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    }
+
     Assert-Equal (ConvertTo-LimeNowVersion 'v2.56.0.windows.2').ToString() '2.56.0.2' 'Git release normalization failed.'
     Assert-Equal (ConvertTo-LimeNowVersion '1.2.3') (ConvertTo-LimeNowVersion 'v1.2.3.0') 'Three- and four-part versions compare differently.'
     foreach ($invalidVersion in @('1.2', '1.2.3-beta.1', 'v1.2.3+metadata', '1.2.3.4.5', '../1.2.3')) {
