@@ -1,8 +1,12 @@
 # GitHub CLI persistence and security
 
 LimeNow installs the official Windows AMD64 GitHub CLI release beneath
-`I:\Apps\LimeNow\GitHubCLI`. The release URL and SHA-256 digest are pinned in
-`setup.ps1`; LimeNow verifies the archive before extracting or executing it.
+`I:\Apps\LimeNow\GitHubCLI`. Each setup checks GitHub's latest stable release
+and verifies the selected Windows archive against its published SHA-256 digest
+before extraction or execution. A verified bootstrap release remains in
+`setup.ps1` for first installation when release discovery is unavailable.
+Updates preserve `Config` and the managed launchers, defer while the managed
+CLI is running, and keep a usable installation when an update check fails.
 
 ## Persistent layout
 
@@ -34,7 +38,7 @@ or changes a file under `.github/workflows`. If an existing persistent sign-in
 lacks that scope, the shortcut detects the non-secret scope metadata and starts
 the same QR device flow with `gh auth refresh` to request it.
 
-LimeNow redirects standard input for the pinned `gh auth login --web` command.
+LimeNow redirects standard input for the managed `gh auth login --web` command.
 That selects GitHub CLI's non-interactive device-flow branch, which prints the
 code and begins polling without opening a browser or waiting for another Enter
 key. A no-op `GH_BROWSER` override is also set as a safeguard. The QR is stored

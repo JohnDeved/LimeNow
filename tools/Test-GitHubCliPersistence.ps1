@@ -18,6 +18,7 @@ if ($parseErrors.Count) {
 }
 
 foreach ($functionName in @(
+    'Get-LimeNowInstalledVersion',
     'Test-GitHubCliInstall',
     'Resolve-LimeNowPowerShell',
     'Ensure-GitHubCliLaunchers',

@@ -21,8 +21,10 @@ $codexStateManagerUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/mai
 $codexWrapper = Join-Path $codexBinRoot 'codex.cmd'
 $codexVersion = '0.163.0'
 $codexRegistryUrl = 'https://registry.npmjs.org/@openai%2fcodex/latest'
+# Bootstrap fallbacks only; each setup checks the publishers for newer stable releases.
 $nodeVersion = 'v24.22.0'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
+$nodeArchiveHash = 'f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3'
 $gitRoot = Join-Path $limeNowAppsRoot 'Git'
 $gitVersion = '2.56.0.windows.2'
 $gitArchiveUrl = 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/PortableGit-2.56.0.2-64-bit.7z.exe'
@@ -46,6 +48,13 @@ $terminalRoot = Join-Path $limeNowAppsRoot 'WindowsTerminal'
 $terminalVersion = '1.25.2733.0'
 $terminalArchiveUrl = 'https://github.com/microsoft/terminal/releases/download/v1.25.2733.0/Microsoft.WindowsTerminal_1.25.2733.0_x64.zip'
 $terminalArchiveHash = 'bf3ef2012f6c44d8340a4c58125acc9498d19b580f9890dc043cdf831852e796'
+$chromiumRoot = Join-Path $limeNowAppsRoot 'Chromium'
+$chromiumAppRoot = Join-Path $chromiumRoot 'Application'
+$chromiumProfileRoot = Join-Path $chromiumRoot 'User Data'
+$chromiumWrapper = Join-Path $chromiumRoot 'chromium.cmd'
+$chromiumVersion = '155.0.8059.85'
+$chromiumArchiveUrl = 'https://github.com/Hibbiki/chromium-win64/releases/download/v155.0.8059.85-r1697595/chrome.7z'
+$chromiumArchiveHash = '80710739b1f92f87ca50b798826c2d9b9e21e06139f96f05b8a9a1b9d0d49cb3'
 $limeSshRoot = Join-Path $limeNowAppsRoot 'LimeSSH'
 $limeSshVersion = '0.1.0'
 $limeSshExecutable = Join-Path $limeSshRoot 'LimeSSH.exe'
@@ -299,15 +308,720 @@ function Remove-SetupRepairDirectory {
     param([Parameter(Mandatory)][string]$Path)
 
     $resolvedPath = [IO.Path]::GetFullPath($Path)
-    $resolvedSetupRoot = [IO.Path]::GetFullPath($setupRoot).TrimEnd('\') + '\'
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $resolvedSetupRoot = [IO.Path]::GetFullPath($setupRoot).TrimEnd($separator) + $separator
     $leaf = Split-Path -Leaf $resolvedPath
     if (-not $resolvedPath.StartsWith($resolvedSetupRoot, [StringComparison]::OrdinalIgnoreCase) -or
         $leaf -notmatch '-repair-[a-f0-9]{32}$') {
         throw "Refusing to remove an unexpected repair directory: $resolvedPath"
     }
     if (Test-Path -LiteralPath $resolvedPath) {
+        if (Test-Path -LiteralPath (Join-Path $resolvedPath 'LIMENOW-RECOVERY')) {
+            Write-SetupLog "WARNING: Preserved update recovery files at $resolvedPath."
+            return
+        }
         Remove-Item -LiteralPath $resolvedPath -Recurse -Force
     }
+}
+
+function Get-LimeNowJson {
+    param([Parameter(Mandatory)][string]$Uri)
+
+    $response = Invoke-RestMethod -Uri $Uri -TimeoutSec 20 -Headers @{
+        'User-Agent' = 'LimeNow'
+        'Cache-Control' = 'no-cache'
+        'Accept' = 'application/json'
+    }
+    # Enumerate top-level JSON arrays consistently, including Windows PowerShell.
+    return $response
+}
+
+function ConvertTo-LimeNowVersion {
+    param([Parameter(Mandatory)][string]$Version)
+
+    if ($Version -cnotmatch '^v?(\d+)\.(\d+)\.(\d+)(?:\.(?:windows\.)?(\d+))?$') {
+        throw "Invalid stable tool version: $Version"
+    }
+    $revision = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
+    return [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $revision)
+}
+
+function Get-LimeNowGitHubRelease {
+    param([Parameter(Mandatory)][string]$Repository)
+
+    if ($Repository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+        throw "Invalid GitHub release repository: $Repository"
+    }
+    $release = Get-LimeNowJson -Uri "https://api.github.com/repos/$Repository/releases/latest"
+    if ($release.draft -isnot [bool] -or $release.draft -or
+        $release.prerelease -isnot [bool] -or $release.prerelease -or
+        [string]::IsNullOrWhiteSpace([string]$release.tag_name)) {
+        throw "GitHub did not return a stable published release for $Repository."
+    }
+    return $release
+}
+
+function Get-LimeNowGitHubAsset {
+    param(
+        [Parameter(Mandatory)]$Release,
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $tag = [string]$Release.tag_name
+    if ($Repository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
+        $tag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$' -or
+        $Name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') {
+        throw 'The GitHub release asset has an unexpected repository, tag, or filename.'
+    }
+    $assets = @($Release.assets | Where-Object {
+        [string]::Equals([string]$_.name, $Name, [StringComparison]::Ordinal)
+    })
+    if ($assets.Count -ne 1) {
+        throw "GitHub did not return exactly one $Name asset for $Repository $tag."
+    }
+    $asset = $assets[0]
+    $expectedUri = "https://github.com/$Repository/releases/download/$tag/$Name"
+    if (-not [string]::Equals([string]$asset.browser_download_url, $expectedUri,
+            [StringComparison]::Ordinal)) {
+        throw "The download URL for $Name does not match its GitHub repository and release."
+    }
+    if ([string]$asset.digest -cnotmatch '^sha256:([a-fA-F0-9]{64})$') {
+        throw "GitHub did not provide an SHA-256 digest for $Name."
+    }
+    return [pscustomobject]@{
+        Uri = $expectedUri
+        Hash = $Matches[1].ToLowerInvariant()
+    }
+}
+
+function Get-LatestNodeRelease {
+    $releases = @(Get-LimeNowJson -Uri 'https://nodejs.org/dist/index.json')
+    $latest = $releases | Where-Object {
+        $_.version -cmatch '^v\d+\.\d+\.\d+$' -and
+        $_.lts -is [string] -and -not [string]::IsNullOrWhiteSpace($_.lts) -and
+        $_.files -contains 'win-x64-zip'
+    } | Sort-Object -Property @{ Expression = {
+        ConvertTo-LimeNowVersion -Version $_.version
+    }; Descending = $true } | Select-Object -First 1
+    if (-not $latest) {
+        throw 'Node.js did not publish a usable Windows x64 LTS release.'
+    }
+    $version = [string]$latest.version
+    $archiveName = "node-$version-win-x64.zip"
+    $releaseBase = "https://nodejs.org/dist/$version"
+    $response = Invoke-WebRequest -Uri "$releaseBase/SHASUMS256.txt" `
+        -UseBasicParsing -TimeoutSec 20 -Headers @{
+            'User-Agent' = 'LimeNow'
+            'Cache-Control' = 'no-cache'
+        }
+    $lines = [regex]::Matches([string]$response.Content,
+        "(?m)^([a-fA-F0-9]{64})[ `t]+\*?$([regex]::Escape($archiveName))`r?$")
+    if ($lines.Count -ne 1) {
+        throw "Node.js did not publish exactly one checksum for $archiveName."
+    }
+    return [pscustomobject]@{
+        Version = $version
+        Uri = "$releaseBase/$archiveName"
+        Hash = $lines[0].Groups[1].Value.ToLowerInvariant()
+    }
+}
+
+function Get-LatestGitRelease {
+    $repository = 'git-for-windows/git'
+    $release = Get-LimeNowGitHubRelease -Repository $repository
+    if ($release.tag_name -cnotmatch '^v(\d+\.\d+\.\d+)\.windows\.([1-9]\d*)$') {
+        throw 'Git for Windows returned an unexpected stable release tag.'
+    }
+    $archiveVersion = $Matches[1]
+    $revision = $Matches[2]
+    if ([int]$revision -gt 1) {
+        $archiveVersion += ".$revision"
+    }
+    $version = ([string]$release.tag_name).Substring(1)
+    $null = ConvertTo-LimeNowVersion -Version $version
+    $asset = Get-LimeNowGitHubAsset -Release $release -Repository $repository `
+        -Name "PortableGit-$archiveVersion-64-bit.7z.exe"
+    return [pscustomobject]@{ Version = $version; Uri = $asset.Uri; Hash = $asset.Hash }
+}
+
+function Get-LatestGitHubCliRelease {
+    $repository = 'cli/cli'
+    $release = Get-LimeNowGitHubRelease -Repository $repository
+    if ($release.tag_name -cnotmatch '^v(\d+\.\d+\.\d+)$') {
+        throw 'GitHub CLI returned an unexpected stable release tag.'
+    }
+    $version = $Matches[1]
+    $null = ConvertTo-LimeNowVersion -Version $version
+    $asset = Get-LimeNowGitHubAsset -Release $release -Repository $repository `
+        -Name "gh_${version}_windows_amd64.zip"
+    return [pscustomobject]@{ Version = $version; Uri = $asset.Uri; Hash = $asset.Hash }
+}
+
+function Get-LatestVSCodeRelease {
+    $release = Get-LimeNowJson `
+        -Uri 'https://update.code.visualstudio.com/api/update/win32-x64-archive/stable/latest'
+    $version = [string]$release.productVersion
+    if ($version -cnotmatch '^\d+\.\d+\.\d+$') {
+        throw 'Visual Studio Code returned an invalid stable product version.'
+    }
+    $null = ConvertTo-LimeNowVersion -Version $version
+    $uri = $null
+    if (-not [uri]::TryCreate([string]$release.url, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -ne 'https' -or $uri.Host -ne 'vscode.download.prss.microsoft.com' -or
+        -not $uri.IsDefaultPort -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or
+        $uri.AbsolutePath -cnotmatch "/stable/[a-fA-F0-9]{40}/VSCode-win32-x64-$([regex]::Escape($version))\.zip$") {
+        throw 'Visual Studio Code returned an unexpected stable Windows x64 download URL.'
+    }
+    if ([string]$release.sha256hash -cnotmatch '^[a-fA-F0-9]{64}$') {
+        throw 'Visual Studio Code did not publish a valid SHA-256 checksum.'
+    }
+    return [pscustomobject]@{
+        Version = $version
+        Uri = $uri.AbsoluteUri
+        Hash = ([string]$release.sha256hash).ToLowerInvariant()
+    }
+}
+
+function Get-LatestWindowsTerminalRelease {
+    $repository = 'microsoft/terminal'
+    $release = Get-LimeNowGitHubRelease -Repository $repository
+    if ($release.tag_name -cnotmatch '^v(\d+\.\d+\.\d+\.\d+)$') {
+        throw 'Windows Terminal returned an unexpected stable release tag.'
+    }
+    $version = $Matches[1]
+    $null = ConvertTo-LimeNowVersion -Version $version
+    $asset = Get-LimeNowGitHubAsset -Release $release -Repository $repository `
+        -Name "Microsoft.WindowsTerminal_${version}_x64.zip"
+    return [pscustomobject]@{ Version = $version; Uri = $asset.Uri; Hash = $asset.Hash }
+}
+
+function Test-LimeNowToolRunning {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string[]]$ProcessNames = @()
+    )
+
+    $prefix = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]'\/') +
+        [IO.Path]::DirectorySeparatorChar
+    foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $processPath = $null
+        try { $processPath = $process.Path } catch { }
+        if ($processPath) {
+            if ($processPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        elseif ($ProcessNames -contains $process.ProcessName) {
+            # Some protected processes do not expose their executable path.
+            return $true
+        }
+    }
+    return $false
+}
+
+function Invoke-LimeNowToolUpdate {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)]$FallbackRelease,
+        [Parameter(Mandatory)][scriptblock]$GetInstalledVersion,
+        [Parameter(Mandatory)][scriptblock]$GetLatestRelease,
+        [Parameter(Mandatory)][scriptblock]$InstallRelease,
+        [string[]]$ProcessNames = @()
+    )
+
+    $installedVersion = & $GetInstalledVersion $Root
+    $installedComparable = if ($installedVersion) {
+        ConvertTo-LimeNowVersion -Version $installedVersion
+    } else { $null }
+    $release = $null
+    try {
+        $release = & $GetLatestRelease
+        if (-not $release) { throw 'No release metadata was returned.' }
+        $null = ConvertTo-LimeNowVersion -Version $release.Version
+    }
+    catch {
+        $release = $null
+        Write-SetupLog "$Name update check unavailable: $($_.Exception.Message)"
+    }
+    if (-not $release -and $installedVersion) {
+        Write-SetupLog "Verified usable $Name $installedVersion; update will retry on the next online setup."
+        return
+    }
+    if (-not $release) {
+        $release = $FallbackRelease
+        Write-SetupLog "$Name will use the known-good bootstrap release $($release.Version)."
+    }
+    $fallbackComparable = ConvertTo-LimeNowVersion -Version $FallbackRelease.Version
+    $targetComparable = ConvertTo-LimeNowVersion -Version $release.Version
+    if ($targetComparable -lt $fallbackComparable) {
+        Write-SetupLog "$Name metadata is older than the known-good floor; using $($FallbackRelease.Version)."
+        $release = $FallbackRelease
+        $targetComparable = $fallbackComparable
+    }
+    if ($installedComparable -and $installedComparable -ge $targetComparable) {
+        Write-SetupLog "Verified $Name $installedVersion; the available release does not require an upgrade."
+        return
+    }
+    if (Test-LimeNowToolRunning -Root $Root -ProcessNames $ProcessNames) {
+        if ($installedVersion) {
+            Write-SetupLog "$Name $installedVersion is running; update deferred until the next setup after it exits."
+            return
+        }
+        throw "$Name needs installation but its files are in use. Close it and run LimeNow again."
+    }
+
+    Write-SetupLog "Installing $Name $($release.Version)."
+    try {
+        & $InstallRelease $release | Out-Null
+        $updatedVersion = & $GetInstalledVersion $Root
+        if (-not $updatedVersion -or
+            (ConvertTo-LimeNowVersion -Version $updatedVersion) -ne $targetComparable) {
+            throw "$Name verification failed after installation."
+        }
+        Write-SetupLog "Installed/repaired $Name $updatedVersion."
+    }
+    catch {
+        if ($_.Exception.Data['LimeNowRecoveryRequired']) {
+            # A runnable binary alone cannot prove that persistent state was restored.
+            throw
+        }
+        $failure = $_.Exception.Message
+        $retainedVersion = $null
+        try {
+            $retainedVersion = & $GetInstalledVersion $Root
+            if ($installedComparable -and $retainedVersion -and
+                (ConvertTo-LimeNowVersion -Version $retainedVersion) -ge $installedComparable) {
+                Write-SetupLog "WARNING: $Name update failed; retained verified $retainedVersion. $failure"
+                return
+            }
+        }
+        catch { }
+        throw "$Name installation/update failed: $failure"
+    }
+}
+
+function Assert-LimeNowNoPendingToolRecovery {
+    param(
+        [Parameter(Mandatory)][string]$SetupRoot,
+        [string]$DestinationPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SetupRoot -PathType Container)) { return }
+    $pending = @(Get-ChildItem -LiteralPath $SetupRoot -Directory -Force | Where-Object {
+        $_.Name -match '-repair-[a-f0-9]{32}$' -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'LIMENOW-RECOVERY') -PathType Leaf)
+    })
+    if ($DestinationPath) {
+        $destination = [IO.Path]::GetFullPath($DestinationPath).TrimEnd([char[]]'\/')
+        $pending = @($pending | Where-Object {
+            @(Get-Content -LiteralPath (Join-Path $_.FullName 'LIMENOW-RECOVERY')) -contains "Destination=$destination"
+        })
+    }
+    if ($pending.Count) {
+        $failure = [IO.IOException]::new(
+            "An unfinished tool update requires recovery before setup can continue. Review the retained files and setup.log: $($pending.FullName -join ', ')"
+        )
+        $failure.Data['LimeNowRecoveryRequired'] = $true
+        throw $failure
+    }
+}
+
+function Get-LimeNowUpdateMutexName {
+    param([Parameter(Mandatory)][string]$DestinationPath)
+
+    $destination = [IO.Path]::GetFullPath($DestinationPath).TrimEnd([char[]]'\/').ToUpperInvariant()
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($destination))
+        $suffix = [BitConverter]::ToString($digest).Replace('-', '')
+        return "LimeNowToolUpdate-$suffix"
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Move-LimeNowPath {
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    # Move-Item can silently nest a directory inside an existing destination.
+    # These same-volume moves instead fail atomically when the target exists.
+    if ([IO.Directory]::Exists($LiteralPath)) {
+        [IO.Directory]::Move($LiteralPath, $Destination)
+    }
+    else {
+        [IO.File]::Move($LiteralPath, $Destination)
+    }
+}
+
+function Install-LimeNowStagedDirectory {
+    param(
+        [Parameter(Mandatory)][string]$CandidatePath,
+        [Parameter(Mandatory)][string]$DestinationPath,
+        [Parameter(Mandatory)][string]$RepairRoot,
+        [string[]]$PreservePaths = @(),
+        [scriptblock]$BeforeSwap,
+        [Parameter(Mandatory)][scriptblock]$Verify
+    )
+
+    $candidate = [IO.Path]::GetFullPath($CandidatePath).TrimEnd([char[]]'\/')
+    $destination = [IO.Path]::GetFullPath($DestinationPath).TrimEnd([char[]]'\/')
+    $repair = [IO.Path]::GetFullPath($RepairRoot).TrimEnd([char[]]'\/')
+    $repairPrefix = $repair + [IO.Path]::DirectorySeparatorChar
+    $destinationPrefix = $destination + [IO.Path]::DirectorySeparatorChar
+    if (-not $candidate.StartsWith($repairPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $destination.StartsWith($repairPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $repair.StartsWith($destinationPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $destination -eq $repair -or
+        [IO.Path]::GetPathRoot($destination) -ne [IO.Path]::GetPathRoot($repair)) {
+        throw 'The staged application and destination do not have safe, separate paths on the same volume.'
+    }
+    $backup = Join-Path $repair 'previous'
+    $marker = Join-Path $repair 'LIMENOW-RECOVERY'
+    if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $marker)) {
+        throw "An unfinished application update already exists in $repair."
+    }
+    foreach ($relative in $PreservePaths) {
+        if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or
+            @($relative.Replace('\', '/').Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count) {
+            throw "Invalid application state path: $relative"
+        }
+    }
+    $verified = & $Verify $candidate
+    if ($verified -isnot [bool] -or -not $verified) {
+        throw 'The staged application failed verification; the installed application was left unchanged.'
+    }
+    $mutex = [Threading.Mutex]::new($false, (Get-LimeNowUpdateMutexName -DestinationPath $destination))
+    $lockTaken = $false
+    try {
+        try {
+            $lockTaken = $mutex.WaitOne(0)
+        }
+        catch [Threading.AbandonedMutexException] {
+            # WaitOne grants ownership when the previous process terminated.
+            $lockTaken = $true
+        }
+        if (-not $lockTaken) {
+            throw 'Another setup is updating this application; installation is deferred.'
+        }
+        Assert-LimeNowNoPendingToolRecovery -SetupRoot (Split-Path -Parent $repair) -DestinationPath $destination
+        if ($BeforeSwap) { & $BeforeSwap $destination | Out-Null }
+        # Recheck under the update lock before touching the current installation.
+        if (Test-LimeNowToolRunning -Root $destination) {
+            throw 'The application was started during its update; installation is deferred.'
+        }
+
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        Set-Content -LiteralPath $marker -Encoding UTF8 -Value @(
+            "Destination=$destination", "Previous=$backup", "Candidate=$candidate"
+        )
+        $backupMoved = $false
+        $candidatePromoted = $false
+        $movedState = [Collections.Generic.List[string]]::new()
+        try {
+            if (Test-Path -LiteralPath $destination) {
+                Move-LimeNowPath -LiteralPath $destination -Destination $backup
+                $backupMoved = $true
+                foreach ($relative in $PreservePaths) {
+                    $previousState = Join-Path $backup $relative
+                    if (-not (Test-Path -LiteralPath $previousState)) { continue }
+                    $candidateState = Join-Path $candidate $relative
+                    if (Test-Path -LiteralPath $candidateState) {
+                        Remove-Item -LiteralPath $candidateState -Recurse -Force -ErrorAction Stop
+                    }
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $candidateState) -Force | Out-Null
+                    Move-LimeNowPath -LiteralPath $previousState -Destination $candidateState
+                    $movedState.Add($relative)
+                }
+            }
+            Move-LimeNowPath -LiteralPath $candidate -Destination $destination
+            $candidatePromoted = $true
+            $verified = & $Verify $destination
+            if ($verified -isnot [bool] -or -not $verified) {
+                throw 'The promoted application failed verification.'
+            }
+            Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
+        }
+        catch {
+            $updateFailure = $_
+            try {
+                $stateRoot = if ($candidatePromoted) { $destination } else { $candidate }
+                for ($i = $movedState.Count - 1; $i -ge 0; $i--) {
+                    $relative = $movedState[$i]
+                    $currentState = Join-Path $stateRoot $relative
+                    $previousState = Join-Path $backup $relative
+                    if (-not (Test-Path -LiteralPath $currentState) -or
+                        (Test-Path -LiteralPath $previousState)) {
+                        throw "Cannot safely restore application state: $relative"
+                    }
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $previousState) -Force | Out-Null
+                    Move-LimeNowPath -LiteralPath $currentState -Destination $previousState
+                }
+                if ($candidatePromoted) {
+                    Move-LimeNowPath -LiteralPath $destination -Destination $candidate
+                }
+                if ($backupMoved) {
+                    Move-LimeNowPath -LiteralPath $backup -Destination $destination
+                }
+                Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
+            }
+            catch {
+                $recoveryFailure = [IO.IOException]::new(
+                    "Application update failed: $($updateFailure.Exception.Message) Rollback failed: $($_.Exception.Message) Recovery files were retained in $repair."
+                )
+                $recoveryFailure.Data['LimeNowRecoveryRequired'] = $true
+                throw $recoveryFailure
+            }
+            throw $updateFailure
+        }
+    }
+    finally {
+        if ($lockTaken) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+function Get-LimeNowInstalledVersion {
+    param(
+        [Parameter(Mandatory)][ValidateSet('Node', 'Git', 'GitHubCli', 'VSCode', 'WindowsTerminal', 'Chromium')][string]$Tool,
+        [Parameter(Mandatory)][string]$Root,
+        [string]$ExecutablePath
+    )
+
+    try {
+        $executableName = switch ($Tool) {
+            'Node' { 'node.exe' }
+            'Git' { 'cmd\git.exe' }
+            'GitHubCli' { 'bin\gh.exe' }
+            'VSCode' { 'Code.exe' }
+            'WindowsTerminal' { 'WindowsTerminal.exe' }
+            'Chromium' { 'chrome.exe' }
+        }
+        if (-not $ExecutablePath) {
+            $ExecutablePath = Join-Path $Root $executableName
+        }
+        if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { return $null }
+
+        switch ($Tool) {
+            'Node' {
+                foreach ($relativePath in @('npm.cmd', 'npx.cmd', 'node_modules\npm\package.json')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $Root $relativePath) -PathType Leaf)) { return $null }
+                }
+                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
+                if ($LASTEXITCODE -eq 0 -and $output -match '^v\d+\.\d+\.\d+$') { return [string]$output }
+            }
+            'Git' {
+                if (-not (Test-Path -LiteralPath (Join-Path $Root 'usr\bin\sh.exe') -PathType Leaf)) { return $null }
+                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
+                if ($LASTEXITCODE -eq 0 -and $output -match '^git version (?<version>\d+\.\d+\.\d+\.windows\.\d+)$') {
+                    return $Matches.version
+                }
+            }
+            'GitHubCli' {
+                $output = (& $ExecutablePath --version 2>$null | Select-Object -First 1)
+                if ($LASTEXITCODE -eq 0 -and $output -match '^gh version (?<version>\d+\.\d+\.\d+)(?:\s|$)') {
+                    return $Matches.version
+                }
+            }
+            'VSCode' {
+                if (-not (Test-Path -LiteralPath (Join-Path $Root 'bin\code.cmd') -PathType Leaf) -or
+                    -not (Test-Path -LiteralPath (Join-Path $Root 'data') -PathType Container)) { return $null }
+                $version = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.ProductVersion
+                if ($version -match '^(?<version>\d+\.\d+\.\d+)(?:[+ ].*)?$') { return $Matches.version }
+            }
+            'WindowsTerminal' {
+                $marker = Join-Path $Root 'LIMENOW-VERSION'
+                if (-not (Test-Path -LiteralPath (Join-Path $Root '.portable') -PathType Leaf) -or
+                    -not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $null }
+                $version = (Get-Content -LiteralPath $marker -Raw).Trim()
+                $fileVersion = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.FileVersion
+                # Terminal's package and PE build numbers differ; their major/minor must agree.
+                if ($version -match '^(?<channel>\d+\.\d+)\.\d+\.\d+$' -and
+                    $fileVersion -match "^$([regex]::Escape($Matches.channel))\.\d+\.\d+$") { return $version }
+            }
+            'Chromium' {
+                $version = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.ProductVersion
+                if ($version -match '^\d+\.\d+\.\d+\.\d+$' -and
+                    (Test-Path -LiteralPath (Join-Path $Root "$version\chrome.dll") -PathType Leaf)) { return $version }
+            }
+        }
+    }
+    catch {
+        # Missing, unreadable, or non-working binaries are repaired by setup.
+    }
+    return $null
+}
+
+function Install-LimeNowPortableTool {
+    param(
+        [Parameter(Mandatory)][ValidateSet('Node', 'Git', 'GitHubCli', 'VSCode', 'WindowsTerminal', 'Chromium')][string]$Tool,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)]$Release
+    )
+
+    $repairRoot = Join-Path $setupRoot ("$($Tool.ToLowerInvariant())-repair-" + [Guid]::NewGuid().ToString('N'))
+    $extractPath = Join-Path $repairRoot 'extracted'
+    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+    $extension = switch ($Tool) { 'Git' { '.7z.exe' }; 'Chromium' { '.7z' }; default { '.zip' } }
+    $archivePath = Join-Path $repairRoot "package$extension"
+
+    try {
+        Get-VerifiedDownload -Uri $Release.Uri -Destination $archivePath -ExpectedHash $Release.Hash -Algorithm SHA256
+        switch ($Tool) {
+            'Git' {
+                $process = Start-Process -FilePath $archivePath `
+                    -ArgumentList '-y', "-o`"$extractPath`"" -Wait -PassThru -WindowStyle Hidden
+                if ($process.ExitCode -ne 0) { throw "Portable Git extraction failed with exit code $($process.ExitCode)." }
+            }
+            'Chromium' {
+                $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+                if (-not (Test-Path -LiteralPath $tar -PathType Leaf)) { throw 'Chromium extraction requires the tar.exe included with current Windows versions.' }
+                & $tar -xf $archivePath -C $extractPath
+                if ($LASTEXITCODE -ne 0) { throw "Chromium archive extraction failed with exit code $LASTEXITCODE." }
+            }
+            default { Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath }
+        }
+
+        $candidatePath = $extractPath
+        $preservePaths = @()
+        $processNames = @()
+        switch ($Tool) {
+            'Node' {
+                $candidatePath = Join-Path $extractPath "node-$($Release.Version)-win-x64"
+                $processNames = @('node')
+            }
+            'Git' { $processNames = @('git', 'git-remote-https', 'git-remote-http', 'ssh', 'bash', 'sh') }
+            'GitHubCli' {
+                if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe') -PathType Leaf)) {
+                    $packages = @(Get-ChildItem -LiteralPath $extractPath -Directory | Where-Object {
+                        Test-Path -LiteralPath (Join-Path $_.FullName 'bin\gh.exe') -PathType Leaf
+                    })
+                    if ($packages.Count -ne 1) { throw 'The verified GitHub CLI archive has an unexpected layout.' }
+                    $candidatePath = $packages[0].FullName
+                }
+                $preservePaths = @('Config', 'gh.cmd', 'GitHub-CLI-Sign-In.cmd', 'GitHub-CLI-Sign-In.ps1')
+                $processNames = @('gh')
+            }
+            'VSCode' {
+                New-Item -ItemType Directory -Path (Join-Path $candidatePath 'data') -Force | Out-Null
+                $preservePaths = @('data')
+                $processNames = @('Code')
+            }
+            'WindowsTerminal' {
+                $packages = @(Get-ChildItem -LiteralPath $extractPath -Directory | Where-Object {
+                    $_.Name -like 'terminal-*' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'WindowsTerminal.exe') -PathType Leaf)
+                })
+                if ($packages.Count -ne 1) { throw 'The verified Windows Terminal archive has an unexpected layout.' }
+                $candidatePath = $packages[0].FullName
+                New-Item -ItemType File -Path (Join-Path $candidatePath '.portable') -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $candidatePath 'LIMENOW-VERSION') -Value $Release.Version -Encoding ASCII
+                $preservePaths = @('settings', '.portable')
+                $processNames = @('WindowsTerminal', 'OpenConsole')
+            }
+            'Chromium' {
+                $candidatePath = Join-Path $extractPath 'Chrome-bin'
+                $processNames = @('chrome', 'crashpad_handler')
+            }
+        }
+
+        # A download can take time; check again before touching the running installation.
+        if (Test-LimeNowToolRunning -Root $Root -ProcessNames $processNames) {
+            throw "$Tool is now running; its update will retry on the next setup."
+        }
+        $verify = {
+            param($path)
+            (Get-LimeNowInstalledVersion -Tool $Tool -Root $path) -eq $Release.Version
+        }
+        $beforeSwap = {
+            param($path)
+            $current = Get-LimeNowInstalledVersion -Tool $Tool -Root $path
+            if ($current -and (ConvertTo-LimeNowVersion $current) -gt (ConvertTo-LimeNowVersion $Release.Version)) {
+                throw "Another setup installed newer $Tool $current while this update was downloading; keeping it."
+            }
+        }
+        Install-LimeNowStagedDirectory -CandidatePath $candidatePath -DestinationPath $Root `
+            -RepairRoot $repairRoot -PreservePaths $preservePaths -BeforeSwap $beforeSwap -Verify $verify
+    }
+    finally {
+        Remove-SetupRepairDirectory -Path $repairRoot
+    }
+}
+
+function Get-LatestChromiumRelease {
+    # Hibbiki publishes independent stable Chromium builds for Windows x64.
+    $repository = 'Hibbiki/chromium-win64'
+    $release = Get-LimeNowGitHubRelease -Repository $repository
+    if ($release.draft -ne $false -or $release.prerelease -ne $false -or
+        $release.tag_name -notmatch '^v(?<version>\d+\.\d+\.\d+\.\d+)-r\d+$') {
+        throw 'The Chromium publisher returned an unsupported stable release.'
+    }
+
+    $version = (ConvertTo-LimeNowVersion $Matches['version']).ToString()
+    $asset = Get-LimeNowGitHubAsset -Release $release -Repository $repository -Name 'chrome.7z'
+    return [pscustomobject]@{
+        Version = $version
+        Uri = $asset.Uri
+        Hash = $asset.Hash
+    }
+}
+
+function Repair-Chromium {
+    $fallback = [pscustomobject]@{
+        Version = $chromiumVersion
+        Uri = $chromiumArchiveUrl
+        Hash = $chromiumArchiveHash
+    }
+    Invoke-LimeNowToolUpdate `
+        -Name 'Chromium' `
+        -Root $chromiumAppRoot `
+        -FallbackRelease $fallback `
+        -GetInstalledVersion {
+            param($root)
+            Get-LimeNowInstalledVersion -Tool Chromium -Root $root
+        } `
+        -GetLatestRelease { Get-LatestChromiumRelease } `
+        -InstallRelease {
+            param($release)
+            Install-LimeNowPortableTool -Tool Chromium -Root $chromiumAppRoot -Release $release
+        } `
+        -ProcessNames @('chrome')
+}
+
+function Ensure-ChromiumLauncher {
+    param([string]$DesktopPath = [Environment]::GetFolderPath('Desktop'))
+
+    $executable = Join-Path $chromiumAppRoot 'chrome.exe'
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        throw "Chromium executable is missing: $executable"
+    }
+    New-Item -ItemType Directory -Path $chromiumRoot, $chromiumProfileRoot, $DesktopPath -Force |
+        Out-Null
+
+    # Relative paths keep the command portable if the persistent tree moves.
+    # Do not use CALL: it would parse the forwarded arguments a second time.
+    $wrapper = @'
+@echo off
+setlocal DisableDelayedExpansion
+REM LimeNow managed Chromium launcher with a persistent profile
+"%~dp0Application\chrome.exe" --user-data-dir="%~dp0User Data" %*
+exit /b %ERRORLEVEL%
+'@
+    Set-Content -LiteralPath $chromiumWrapper -Value $wrapper -Encoding ASCII
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut((Join-Path $DesktopPath 'Chromium.lnk'))
+    $shortcut.TargetPath = $executable
+    $shortcut.Arguments = "--user-data-dir=`"$chromiumProfileRoot`""
+    $shortcut.WorkingDirectory = $documentsRoot
+    $shortcut.Description = 'Chromium with a persistent LimeNow profile (Hibbiki stable build)'
+    $shortcut.IconLocation = "$executable,0"
+    $shortcut.Save()
+    Write-SetupLog 'Verified the Chromium command, persistent profile, and desktop shortcut.'
 }
 
 function Copy-IfChanged {
@@ -722,184 +1436,46 @@ function Ensure-QwertzKeyboard {
 }
 
 function Test-NodeInstall {
-    $nodeExecutable = Join-Path $nodeRoot 'node.exe'
-    $npmCommand = Join-Path $nodeRoot 'npm.cmd'
-    $npxCommand = Join-Path $nodeRoot 'npx.cmd'
-    if (-not (Test-Path -LiteralPath $nodeExecutable) -or
-        -not (Test-Path -LiteralPath $npmCommand) -or
-        -not (Test-Path -LiteralPath $npxCommand)) {
-        return $false
-    }
-
-    try {
-        $installedVersion = (& $nodeExecutable --version 2>$null | Select-Object -First 1).Trim()
-        return $installedVersion -eq $nodeVersion
-    }
-    catch {
-        return $false
-    }
+    return (Get-LimeNowInstalledVersion -Tool Node -Root $nodeRoot) -eq $nodeVersion
 }
 
 function Repair-NodeAndNpm {
-    if (Test-NodeInstall) {
-        Write-SetupLog "Verified portable Node.js $nodeVersion and bundled npm."
-        return
+    $fallback = [pscustomobject]@{
+        Version = $nodeVersion
+        Uri = "https://nodejs.org/dist/$nodeVersion/$nodeArchiveName"
+        Hash = $nodeArchiveHash
     }
-
-    Write-SetupLog "Node.js is missing or incomplete; installing official LTS $nodeVersion."
-    $repairRoot = Join-Path $setupRoot ('node-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot $nodeArchiveName
-    $sumsPath = Join-Path $repairRoot 'SHASUMS256.txt'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    $releaseBase = "https://nodejs.org/dist/$nodeVersion"
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-
-    try {
-        Invoke-WebRequest -Uri "$releaseBase/SHASUMS256.txt" -OutFile $sumsPath -UseBasicParsing -TimeoutSec 60
-        Invoke-WebRequest -Uri "$releaseBase/$nodeArchiveName" -OutFile $archivePath -UseBasicParsing -TimeoutSec 120
-
-        $sumLine = Get-Content -LiteralPath $sumsPath |
-            Where-Object { $_ -match "^[a-fA-F0-9]{64}\s+\*?$([regex]::Escape($nodeArchiveName))$" } |
-            Select-Object -First 1
-        if (-not $sumLine) {
-            throw "Node.js SHASUMS256.txt has no checksum for $nodeArchiveName."
-        }
-        $expectedHash = ($sumLine -split '\s+', 2)[0].ToLowerInvariant()
-        $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $expectedHash) {
-            throw "Node.js archive checksum mismatch. Expected $expectedHash but received $actualHash."
-        }
-
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        $packageRoot = Join-Path $extractPath "node-$nodeVersion-win-x64"
-        if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'node.exe')) -or
-            -not (Test-Path -LiteralPath (Join-Path $packageRoot 'npm.cmd'))) {
-            throw 'The verified Node.js archive is missing node.exe or npm.cmd.'
-        }
-
-        New-Item -ItemType Directory -Path $nodeRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $packageRoot -Force |
-            Copy-Item -Destination $nodeRoot -Recurse -Force
-        if (-not (Test-NodeInstall)) {
-            throw 'Node.js verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable Node.js $nodeVersion with npm."
-    }
-    finally {
-        $resolvedRepairRoot = [IO.Path]::GetFullPath($repairRoot)
-        $resolvedSetupRoot = [IO.Path]::GetFullPath($setupRoot)
-        if ($resolvedRepairRoot.StartsWith($resolvedSetupRoot, [StringComparison]::OrdinalIgnoreCase) -and
-            (Test-Path -LiteralPath $resolvedRepairRoot)) {
-            Remove-Item -LiteralPath $resolvedRepairRoot -Recurse -Force
-        }
-    }
+    Invoke-LimeNowToolUpdate -Name 'Node.js LTS and bundled npm' -Root $nodeRoot -FallbackRelease $fallback `
+        -GetInstalledVersion { param($path) Get-LimeNowInstalledVersion -Tool Node -Root $path } `
+        -GetLatestRelease { Get-LatestNodeRelease } `
+        -InstallRelease { param($release) Install-LimeNowPortableTool -Tool Node -Root $nodeRoot -Release $release } `
+        -ProcessNames @('node')
 }
 
 function Test-GitInstall {
-    $gitExecutable = Join-Path $gitRoot 'cmd\git.exe'
-    if (-not (Test-Path -LiteralPath $gitExecutable)) {
-        return $false
-    }
-    try {
-        $output = (& $gitExecutable --version 2>$null | Select-Object -First 1)
-        return $output -eq "git version $gitVersion"
-    }
-    catch {
-        return $false
-    }
+    return (Get-LimeNowInstalledVersion -Tool Git -Root $gitRoot) -eq $gitVersion
 }
 
 function Repair-Git {
-    if (Test-GitInstall) {
-        Write-SetupLog "Verified portable Git $gitVersion."
-        return
-    }
-
-    Write-SetupLog "Git is missing or incomplete; installing official Git for Windows $gitVersion."
-    $repairRoot = Join-Path $setupRoot ('git-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'PortableGit.7z.exe'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
-    try {
-        Get-VerifiedDownload -Uri $gitArchiveUrl -Destination $archivePath -ExpectedHash $gitArchiveHash
-        $extract = Start-Process -FilePath $archivePath `
-            -ArgumentList '-y', "-o$extractPath" `
-            -Wait -PassThru -WindowStyle Hidden
-        if ($extract.ExitCode -ne 0 -or
-            -not (Test-Path -LiteralPath (Join-Path $extractPath 'cmd\git.exe'))) {
-            throw "Portable Git extraction failed with exit code $($extract.ExitCode)."
-        }
-        New-Item -ItemType Directory -Path $gitRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $extractPath -Force |
-            Copy-Item -Destination $gitRoot -Recurse -Force
-        if (-not (Test-GitInstall)) {
-            throw 'Git verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable Git $gitVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
+    $fallback = [pscustomobject]@{ Version = $gitVersion; Uri = $gitArchiveUrl; Hash = $gitArchiveHash }
+    Invoke-LimeNowToolUpdate -Name 'Git for Windows' -Root $gitRoot -FallbackRelease $fallback `
+        -GetInstalledVersion { param($path) Get-LimeNowInstalledVersion -Tool Git -Root $path } `
+        -GetLatestRelease { Get-LatestGitRelease } `
+        -InstallRelease { param($release) Install-LimeNowPortableTool -Tool Git -Root $gitRoot -Release $release } `
+        -ProcessNames @('git', 'git-remote-https', 'git-remote-http', 'ssh', 'bash', 'sh')
 }
 
 function Test-GitHubCliInstall {
-    if (-not (Test-Path -LiteralPath $githubCliExecutable -PathType Leaf)) {
-        return $false
-    }
-    try {
-        $output = (& $githubCliExecutable --version 2>$null | Select-Object -First 1)
-        return $output -match "^gh version $([regex]::Escape($githubCliVersion))(?:\s|$)"
-    }
-    catch {
-        return $false
-    }
+    return (Get-LimeNowInstalledVersion -Tool GitHubCli -Root $githubCliRoot -ExecutablePath $githubCliExecutable) -eq $githubCliVersion
 }
 
 function Repair-GitHubCli {
-    if (Test-GitHubCliInstall) {
-        Write-SetupLog "Verified official GitHub CLI $githubCliVersion."
-        return
-    }
-
-    if (Get-Process -Name 'gh' -ErrorAction SilentlyContinue) {
-        throw 'GitHub CLI needs repair but is running. Close gh and run LimeNow again.'
-    }
-
-    Write-SetupLog "GitHub CLI is missing or incomplete; installing official portable gh $githubCliVersion."
-    $repairRoot = Join-Path $setupRoot ('github-cli-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'github-cli.zip'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-    try {
-        Get-VerifiedDownload `
-            -Uri $githubCliArchiveUrl `
-            -Destination $archivePath `
-            -ExpectedHash $githubCliArchiveHash
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        $packageRoot = if (Test-Path -LiteralPath (Join-Path $extractPath 'bin\gh.exe')) {
-            Get-Item -LiteralPath $extractPath
-        }
-        else {
-            Get-ChildItem -LiteralPath $extractPath -Directory |
-                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'bin\gh.exe') } |
-                Select-Object -First 1
-        }
-        if (-not $packageRoot) {
-            throw 'The verified GitHub CLI archive has an unexpected layout.'
-        }
-
-        New-Item -ItemType Directory -Path $githubCliRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $packageRoot.FullName -Force |
-            Where-Object Name -NE 'Config' |
-            Copy-Item -Destination $githubCliRoot -Recurse -Force
-        if (-not (Test-GitHubCliInstall)) {
-            throw 'GitHub CLI verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official GitHub CLI $githubCliVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
+    $fallback = [pscustomobject]@{ Version = $githubCliVersion; Uri = $githubCliArchiveUrl; Hash = $githubCliArchiveHash }
+    Invoke-LimeNowToolUpdate -Name 'GitHub CLI' -Root $githubCliRoot -FallbackRelease $fallback `
+        -GetInstalledVersion { param($path) Get-LimeNowInstalledVersion -Tool GitHubCli -Root $path } `
+        -GetLatestRelease { Get-LatestGitHubCliRelease } `
+        -InstallRelease { param($release) Install-LimeNowPortableTool -Tool GitHubCli -Root $githubCliRoot -Release $release } `
+        -ProcessNames @('gh')
 }
 
 function Protect-GitHubCliConfig {
@@ -1120,7 +1696,7 @@ Write-Host 'Enter that code on your other device and approve GitHub CLI there.'
 Write-Host 'No browser will open inside the GeForce NOW session.'
 Write-Host ''
 
-# Redirected stdin makes the pinned GitHub CLI use its headless device flow: it
+# Redirected stdin makes the managed GitHub CLI use its headless device flow: it
 # prints the code, skips its local browser prompt, and immediately starts polling.
 if ($refreshExistingAuthorization) {
     '' | & '__GITHUB_CLI_EXECUTABLE__' auth refresh --hostname github.com --scopes workflow --clipboard --insecure-storage
@@ -1191,101 +1767,29 @@ function Ensure-GitHubCliAuthentication {
 }
 
 function Test-VSCodeInstall {
-    $codeExecutable = Join-Path $vscodeRoot 'Code.exe'
-    $codeCommand = Join-Path $vscodeRoot 'bin\code.cmd'
-    if (-not (Test-Path -LiteralPath $codeExecutable) -or
-        -not (Test-Path -LiteralPath $codeCommand) -or
-        -not (Test-Path -LiteralPath (Join-Path $vscodeRoot 'data'))) {
-        return $false
-    }
-    return (Get-Item -LiteralPath $codeExecutable).VersionInfo.ProductVersion -like "$vscodeVersion*"
+    return (Get-LimeNowInstalledVersion -Tool VSCode -Root $vscodeRoot) -eq $vscodeVersion
 }
 
 function Repair-VSCode {
-    if (Test-VSCodeInstall) {
-        Write-SetupLog "Verified portable Visual Studio Code $vscodeVersion."
-        return
-    }
-    if (Get-Process -Name 'Code' -ErrorAction SilentlyContinue) {
-        throw 'Visual Studio Code needs repair but is running. Close it and run LimeNow again.'
-    }
-
-    Write-SetupLog "Visual Studio Code is missing or incomplete; installing official portable VS Code $vscodeVersion."
-    $repairRoot = Join-Path $setupRoot ('vscode-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'vscode.zip'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-    try {
-        Get-VerifiedDownload -Uri $vscodeArchiveUrl -Destination $archivePath `
-            -ExpectedHash $vscodeArchiveHash -Algorithm SHA256
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        if (-not (Test-Path -LiteralPath (Join-Path $extractPath 'Code.exe')) -or
-            -not (Test-Path -LiteralPath (Join-Path $extractPath 'bin\code.cmd'))) {
-            throw 'The verified Visual Studio Code archive has an unexpected layout.'
-        }
-        New-Item -ItemType Directory -Path $vscodeRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $extractPath -Force |
-            Where-Object Name -NE 'data' |
-            Copy-Item -Destination $vscodeRoot -Recurse -Force
-        New-Item -ItemType Directory -Path (Join-Path $vscodeRoot 'data') -Force | Out-Null
-        if (-not (Test-VSCodeInstall)) {
-            throw 'Visual Studio Code verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable Visual Studio Code $vscodeVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
+    $fallback = [pscustomobject]@{ Version = $vscodeVersion; Uri = $vscodeArchiveUrl; Hash = $vscodeArchiveHash }
+    Invoke-LimeNowToolUpdate -Name 'Visual Studio Code' -Root $vscodeRoot -FallbackRelease $fallback `
+        -GetInstalledVersion { param($path) Get-LimeNowInstalledVersion -Tool VSCode -Root $path } `
+        -GetLatestRelease { Get-LatestVSCodeRelease } `
+        -InstallRelease { param($release) Install-LimeNowPortableTool -Tool VSCode -Root $vscodeRoot -Release $release } `
+        -ProcessNames @('Code')
 }
 
 function Test-WindowsTerminalInstall {
-    $terminalExecutable = Join-Path $terminalRoot 'WindowsTerminal.exe'
-    $versionMarker = Join-Path $terminalRoot 'LIMENOW-VERSION'
-    return (Test-Path -LiteralPath $terminalExecutable) -and
-        (Test-Path -LiteralPath (Join-Path $terminalRoot '.portable')) -and
-        (Test-Path -LiteralPath $versionMarker) -and
-        ((Get-Content -LiteralPath $versionMarker -Raw).Trim() -eq $terminalVersion)
+    return (Get-LimeNowInstalledVersion -Tool WindowsTerminal -Root $terminalRoot) -eq $terminalVersion
 }
 
 function Repair-WindowsTerminal {
-    if (Test-WindowsTerminalInstall) {
-        Write-SetupLog "Verified portable Windows Terminal $terminalVersion."
-        return
-    }
-    if (Get-Process -Name 'WindowsTerminal' -ErrorAction SilentlyContinue) {
-        throw 'Windows Terminal needs repair but is running. Close it and run LimeNow again.'
-    }
-
-    Write-SetupLog "Windows Terminal is missing or incomplete; installing official portable Terminal $terminalVersion."
-    $repairRoot = Join-Path $setupRoot ('terminal-repair-' + [Guid]::NewGuid().ToString('N'))
-    $archivePath = Join-Path $repairRoot 'terminal.zip'
-    $extractPath = Join-Path $repairRoot 'extracted'
-    New-Item -ItemType Directory -Path $repairRoot -Force | Out-Null
-    try {
-        Get-VerifiedDownload -Uri $terminalArchiveUrl -Destination $archivePath -ExpectedHash $terminalArchiveHash
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
-        $packageRoot = Get-ChildItem -LiteralPath $extractPath -Directory |
-            Where-Object Name -Like 'terminal-*' |
-            Select-Object -First 1
-        if (-not $packageRoot -or
-            -not (Test-Path -LiteralPath (Join-Path $packageRoot.FullName 'WindowsTerminal.exe'))) {
-            throw 'The verified Windows Terminal archive has an unexpected layout.'
-        }
-        New-Item -ItemType Directory -Path $terminalRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $packageRoot.FullName -Force |
-            Where-Object Name -NotIn @('.portable', 'settings', 'LIMENOW-VERSION') |
-            Copy-Item -Destination $terminalRoot -Recurse -Force
-        New-Item -ItemType File -Path (Join-Path $terminalRoot '.portable') -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $terminalRoot 'LIMENOW-VERSION') `
-            -Value $terminalVersion -Encoding ASCII
-        if (-not (Test-WindowsTerminalInstall)) {
-            throw 'Windows Terminal verification failed after installation.'
-        }
-        Write-SetupLog "Installed/repaired official portable Windows Terminal $terminalVersion."
-    }
-    finally {
-        Remove-SetupRepairDirectory -Path $repairRoot
-    }
+    $fallback = [pscustomobject]@{ Version = $terminalVersion; Uri = $terminalArchiveUrl; Hash = $terminalArchiveHash }
+    Invoke-LimeNowToolUpdate -Name 'Windows Terminal' -Root $terminalRoot -FallbackRelease $fallback `
+        -GetInstalledVersion { param($path) Get-LimeNowInstalledVersion -Tool WindowsTerminal -Root $path } `
+        -GetLatestRelease { Get-LatestWindowsTerminalRelease } `
+        -InstallRelease { param($release) Install-LimeNowPortableTool -Tool WindowsTerminal -Root $terminalRoot -Release $release } `
+        -ProcessNames @('WindowsTerminal', 'OpenConsole')
 }
 
 function Get-GitHubCliCredentialHelper {
@@ -1303,7 +1807,8 @@ function Ensure-DeveloperEnvironment {
         $githubCliRoot,
         (Join-Path $gitRoot 'cmd'),
         (Join-Path $vscodeRoot 'bin'),
-        $terminalRoot
+        $terminalRoot,
+        $chromiumRoot
     )
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -1536,11 +2041,15 @@ function Ensure-DeveloperCommandShims {
         'gh.cmd' = $githubCliWrapper
         'code.cmd' = Join-Path $vscodeRoot 'bin\code.cmd'
         'wt.cmd' = Join-Path $terminalRoot 'WindowsTerminal.exe'
+        'chromium.cmd' = $chromiumWrapper
     }
 
     foreach ($entry in $commands.GetEnumerator()) {
+        if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) { continue }
         $shimPath = Join-Path $shimRoot $entry.Key
-        $callKeyword = if ($entry.Value.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+        # Chromium is the final command in its shim; omit CALL to avoid parsing URLs twice.
+        $callKeyword = if ($entry.Key -ne 'chromium.cmd' -and
+            $entry.Value.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
             'call '
         }
         else {
@@ -1560,7 +2069,7 @@ $callKeyword"$($entry.Value)" %*
         }
         Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII
     }
-    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, GitHub CLI, code, and wt command shims.'
+    Write-SetupLog 'Verified immediate Node.js, npm, npx, Codex, Git, GitHub CLI, code, wt, and Chromium command shims.'
 }
 
 function Ensure-DeveloperDesktopShortcuts {
@@ -2004,6 +2513,7 @@ try {
     }
     Ensure-SetupCopies
     Ensure-StartupHook
+    Assert-LimeNowNoPendingToolRecovery -SetupRoot $setupRoot
     Repair-NodeAndNpm
     Repair-Git
     Repair-GitHubCli
@@ -2014,6 +2524,8 @@ try {
     Ensure-DeveloperEnvironment
     Repair-CodexCli
     Ensure-CodexLauncher
+    Repair-Chromium
+    Ensure-ChromiumLauncher
     Ensure-DeveloperCommandShims
     Ensure-DeveloperDesktopShortcuts
     Ensure-GitHubCliAuthentication
