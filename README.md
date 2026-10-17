@@ -143,6 +143,30 @@ the session continues with the installed known-good files. The progress window
 closes automatically after showing the result. Automatic updates trust code
 published to this repository's `main` branch over HTTPS.
 
+### Installed tool versions
+
+The portable Windows x64 pins were refreshed on 2026-10-17:
+
+| Tool | Version | Update source |
+| ---- | ------- | ------------- |
+| Codex CLI | `0.163.0` fallback | [Official stable release](https://github.com/openai/codex/releases/tag/rust-v0.163.0); setup checks npm for newer stable versions |
+| Node.js | `24.22.0` LTS | [Official LTS release](https://nodejs.org/en/blog/release/v24.22.0), including npm `11.19.1` and npx |
+| Git for Windows | `2.56.0.windows.2` | [Official PortableGit release](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.2) |
+| GitHub CLI | `2.102.0` | [Official portable release](https://github.com/cli/cli/releases/tag/v2.102.0) |
+| Visual Studio Code | `1.142.0` | [Official stable archive](https://code.visualstudio.com/updates/v1_142), verified with SHA-256 |
+| Windows Terminal | `1.25.2733.0` | [Official unpackaged release](https://github.com/microsoft/terminal/releases/tag/v1.25.2733.0) |
+| LimeSSH | `0.1.0` preview | [LimeNow machine-mode build](https://github.com/JohnDeved/LimeNow/releases/tag/limessh-v0.1.0) |
+| Modrinth App | `0.16.1` GFN build | [LimeNow compatibility build](https://github.com/JohnDeved/LimeNow/releases/tag/modrinth-gfn-v0.16.1) |
+
+Node.js stays on the LTS channel. LimeSSH and Modrinth use LimeNow-specific
+builds; updating either requires a new compatible build and published release
+assets. Their existing release pins remain current for this repository.
+
+Setup applies these pins to Node.js, Git, GitHub CLI, VS Code, and Windows
+Terminal. Codex follows npm's stable release and preserves newer usable
+installations. Close Codex, VS Code, and Windows Terminal before rerunning
+setup from PowerShell so running executables do not block their updates.
+
 ## Persistent GitHub CLI sign-in
 
 LimeNow creates a **GitHub CLI Sign In** desktop shortcut. It starts GitHub's

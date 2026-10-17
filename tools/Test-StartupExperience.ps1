@@ -236,7 +236,8 @@ echo preserve-this-command
 finally {
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
-        $resolvedParent = [IO.Path]::GetFullPath($TestParent).TrimEnd('\') + '\'
+        $separator = [IO.Path]::DirectorySeparatorChar
+        $resolvedParent = [IO.Path]::GetFullPath($TestParent).TrimEnd($separator) + $separator
         if (-not $resolvedRoot.StartsWith($resolvedParent, [StringComparison]::OrdinalIgnoreCase) -or
             (Split-Path -Leaf $resolvedRoot) -notmatch '^LimeNow-startup-experience-test-[a-f0-9]{32}$') {
             throw "Refusing to remove unexpected test directory: $resolvedRoot"

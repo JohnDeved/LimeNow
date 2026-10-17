@@ -2,7 +2,7 @@
 
 LimeNow installs the official stable `@openai/codex` npm package under
 `I:\Apps\LimeNow\NpmGlobal` and checks the npm registry during each setup run.
-The known-good fallback is currently `0.147.0`; an unavailable registry leaves
+The known-good fallback is currently `0.163.0`; an unavailable registry leaves
 a usable installed version in place and retries on the next online setup. The
 managed `codex` wrapper is placed before the npm package directory on `PATH`.
 The wrapper prepares a temporary
@@ -37,6 +37,13 @@ Codex 0.147.0 discovers and resumes conversations from rollout files under
 backfill from them, so LimeNow intentionally lets that database be recreated on
 each temporary machine. This avoids persisting SQLite lock/WAL files and
 unrelated goals, memory, or diagnostic databases.
+
+The persisted paths, file-authentication setting, login/logout commands, and
+rollout-index backfill were also reviewed against the
+[`rust-v0.163.0` source](https://github.com/openai/codex/tree/rust-v0.163.0/codex-rs).
+This source review does not extend the Windows binary or replacement-machine
+verification above to 0.163.0. SQLite-only metadata is outside the persistence
+manifest.
 
 ## Deliberately excluded
 
