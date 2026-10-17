@@ -18,6 +18,7 @@ if ($parseErrors.Count) {
 }
 
 foreach ($functionName in @(
+    'Get-LimeNowInstalledVersion',
     'Test-GitHubCliInstall',
     'Resolve-LimeNowPowerShell',
     'Ensure-GitHubCliLaunchers',
@@ -35,9 +36,9 @@ foreach ($functionName in @(
 }
 
 foreach ($requiredSetupText in @(
-    "`$githubCliVersion = '2.97.0'",
-    'https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_windows_amd64.zip',
-    "`$githubCliArchiveHash = '35d7fe05c4dd1411ffda1e73dfc7c6f44b75c936ca51fa6595c657fdc0350cec'",
+    "`$githubCliVersion = '2.102.0'",
+    'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip',
+    "`$githubCliArchiveHash = 'ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4'",
     'function Repair-GitHubCli',
     'function Protect-GitHubCliConfig',
     'function Ensure-GitHubCliLaunchers',
@@ -105,12 +106,12 @@ try {
     $githubCliLoginLauncher = Join-Path $githubCliRoot 'GitHub-CLI-Sign-In.cmd'
     $githubCliLoginScript = Join-Path $githubCliRoot 'GitHub-CLI-Sign-In.ps1'
     $githubCliDeviceUrl = 'https://github.com/login/device'
-    $githubCliVersion = '2.97.0'
+    $githubCliVersion = '2.102.0'
     New-Item -ItemType Directory -Path $githubCliBinRoot -Force | Out-Null
     @'
 @echo off
 if "%~1"=="--version" (
-  echo gh version 2.97.0 ^(2026-07-31^)
+  echo gh version 2.102.0 ^(2026-09-30^)
   exit /b 0
 )
 if defined LIMENOW_GH_HELPER_LOG (

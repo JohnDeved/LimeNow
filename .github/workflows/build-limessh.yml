@@ -15,6 +15,9 @@ on:
       - tools/Test-KeyboardLayout.ps1
       - tools/Test-GitHubCliPersistence.ps1
       - tools/Test-StartupExperience.ps1
+      - tools/Test-ToolUpdates.ps1
+      - tools/Test-PortableToolInstall.ps1
+      - tools/Test-Chromium.ps1
       - tools/Test-RemoteAccessManager.ps1
   push:
     branches:
@@ -31,6 +34,9 @@ on:
       - tools/Test-KeyboardLayout.ps1
       - tools/Test-GitHubCliPersistence.ps1
       - tools/Test-StartupExperience.ps1
+      - tools/Test-ToolUpdates.ps1
+      - tools/Test-PortableToolInstall.ps1
+      - tools/Test-Chromium.ps1
       - tools/Test-RemoteAccessManager.ps1
 
 permissions:
@@ -78,7 +84,10 @@ jobs:
             '.\tools\Test-CodexPersistence.ps1',
             '.\tools\Test-KeyboardLayout.ps1',
             '.\tools\Test-GitHubCliPersistence.ps1',
-            '.\tools\Test-StartupExperience.ps1'
+            '.\tools\Test-StartupExperience.ps1',
+            '.\tools\Test-ToolUpdates.ps1',
+            '.\tools\Test-PortableToolInstall.ps1',
+            '.\tools\Test-Chromium.ps1'
           )) {
             $tokens = $null
             $parseErrors = $null
@@ -95,12 +104,20 @@ jobs:
           & .\tools\Test-KeyboardLayout.ps1
           & .\tools\Test-GitHubCliPersistence.ps1
           & .\tools\Test-StartupExperience.ps1
+          & .\tools\Test-ToolUpdates.ps1
           & .\tools\Test-LimeSshPrototype.ps1 `
             -LimeSshPath .\dist\LimeSSH.exe `
             -RelayPath .\dist\uptermd.exe
           & .\tools\Test-RemoteAccessManager.ps1 `
             -LimeSshPath .\dist\LimeSSH.exe `
             -RelayPath .\dist\uptermd.exe
+
+      - name: Verify portable tool installers and Chromium on Windows
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          & .\tools\Test-PortableToolInstall.ps1
+          & .\tools\Test-Chromium.ps1 -LiveDownload
 
       - name: Package license and provenance
         shell: pwsh
