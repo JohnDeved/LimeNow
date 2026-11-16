@@ -15,7 +15,11 @@ function Get-KoboldCppStartupContent {
     }
     $unmanaged = [regex]::Replace($Content, $pattern, '')
     $manager = Join-Path $Root 'koboldcpp.ps1'
-    $command = '@if exist "' + $manager + '" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "' + $manager + '" -Action Repair -Root "' + $Root + '"'
+    $powerShell = 'I:\Apps\SalsaNOW\SilentApps\Powershell\pwsh.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        $powerShell = '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+    $command = '@if exist "' + $manager + '" "' + $powerShell + '" -NoProfile -ExecutionPolicy Bypass -File "' + $manager + '" -Action Repair -Root "' + $Root + '"'
     # Repair has no network or inference work. Place it before unrelated commands, including exit /b.
     return $begin + "`r`n" + $command + "`r`n" + $end + "`r`n" + $unmanaged
 }
