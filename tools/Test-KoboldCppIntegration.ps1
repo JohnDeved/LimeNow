@@ -2,7 +2,7 @@
 param()
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$manager = Join-Path $repo 'koboldcpp.ps1'
+$script:managerSource = Join-Path $repo 'koboldcpp.ps1'
 $testRoot = Join-Path $env:TEMP ('LimeNow Hook Tests ' + [Guid]::NewGuid().ToString('N'))
 $checks = 0
 function Assert-True {
@@ -42,7 +42,7 @@ function Invoke-WebRequest {
     switch ($script:downloadMode) {
         'offline' { throw 'Simulated offline session' }
         'invalid' { [IO.File]::WriteAllText($OutFile, 'not a manager') }
-        'valid' { Copy-Item -LiteralPath $manager -Destination $OutFile }
+        'valid' { Copy-Item -LiteralPath $script:managerSource -Destination $OutFile }
     }
 }
 function Resolve-LimeNowPowerShell { return 'C:\Program Files\PowerShell\7\pwsh.exe' }
