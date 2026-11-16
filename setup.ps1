@@ -2480,6 +2480,146 @@ function Ensure-ModrinthShortcut {
     Write-SetupLog 'Verified persistent Modrinth desktop shortcut.'
 }
 
+function Ensure-KoboldCppIntegration {
+    [CmdletBinding()]
+    param(
+        [string]$Root = (Join-Path $limeNowAppsRoot 'KoboldCpp'),
+        [string]$DesktopPath = [Environment]::GetFolderPath('Desktop')
+    )
+
+    # Optional and small: startup restores the launcher, not a 600 MB executable or model.
+    $manager = Join-Path $Root 'koboldcpp.ps1'
+    $remoteUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/koboldcpp.ps1'
+    $candidate = $null
+    try {
+        New-Item -ItemType Directory -Path $Root -Force | Out-Null
+        $candidate = Join-Path $Root ('koboldcpp-manager-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+        Get-LimeNowManagedScriptCandidate -LocalPath $manager -RemoteUrl $remoteUrl -CandidatePath $candidate -Description 'KoboldCpp manager'
+
+        $content = Get-Content -LiteralPath $candidate -Raw
+        if ($content -notmatch '(?m)^# LIMENOW_KOBOLDCPP_SCRIPT\r?
+    try {
+        $response = Invoke-WebRequest `
+            -Uri 'https://login.live.com/' `
+            -Method Head `
+            -TimeoutSec 15 `
+            -MaximumRedirection 3 `
+            -UseBasicParsing
+        Write-SetupLog "Microsoft login TLS check succeeded (HTTP $([int]$response.StatusCode))."
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $status = [int]$_.Exception.Response.StatusCode
+            Write-SetupLog "Microsoft login TLS check succeeded (HTTP $status)."
+        }
+        else {
+            Write-SetupLog "WARNING: Microsoft login TLS check failed: $($_.Exception.Message)"
+        }
+    }
+}
+
+Initialize-SetupStorage
+Show-StartupProgressHeader
+Write-SetupLog "LimeNow setup started. StartupMode=$Startup"
+
+$setupSucceeded = $false
+$startupHandedOff = $false
+try {
+    Ensure-TimeZone
+    if ($Startup -and -not $SkipStartupUpdate) {
+        $updateStatus = Update-LimeNowSetup
+        if ($updateStatus -eq 'Updated') {
+            & $canonicalScript -Startup -SkipStartupUpdate -RefreshManagedScripts
+            $startupHandedOff = $true
+            return
+        }
+        if ($updateStatus -eq 'Current') {
+            $RefreshManagedScripts = $true
+        }
+    }
+    Ensure-SetupCopies
+    Ensure-StartupHook
+    Ensure-KoboldCppIntegration
+    Assert-LimeNowNoPendingToolRecovery -SetupRoot $setupRoot
+    Repair-NodeAndNpm
+    Repair-Git
+    Repair-GitHubCli
+    Protect-GitHubCliConfig
+    Ensure-GitHubCliLaunchers
+    Repair-VSCode
+    Repair-WindowsTerminal
+    Ensure-DeveloperEnvironment
+    Repair-CodexCli
+    Ensure-CodexLauncher
+    Repair-Chromium
+    Ensure-ChromiumLauncher
+    Ensure-DeveloperCommandShims
+    Ensure-DeveloperDesktopShortcuts
+    Ensure-GitHubCliAuthentication
+    Ensure-LimeSshRemoteAccess
+    Ensure-ModrinthPersistentData
+    Repair-ModrinthLauncher
+    Ensure-ModrinthShortcut
+    Ensure-QwertzKeyboard
+    if (-not $Startup) {
+        Test-MicrosoftLoginTls
+    }
+    Write-SetupLog 'LimeNow setup completed successfully.'
+    $setupSucceeded = $true
+}
+catch {
+    Write-SetupLog "ERROR: $($_.Exception.Message)"
+    if (-not $Startup) {
+        throw
+    }
+}
+finally {
+    if (-not $startupHandedOff) {
+        Show-StartupProgressResult -Succeeded $setupSucceeded
+    }
+}
+) {
+            throw 'Unrecognized KoboldCpp manager: missing script marker.'
+        }
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$errors
+        )
+        if ($errors.Count -gt 0 -or -not $ast.ParamBlock) {
+            throw 'Invalid KoboldCpp manager syntax or parameter block.'
+        }
+        $parameterNames = @($ast.ParamBlock.Parameters | ForEach-Object {
+            $_.Name.VariablePath.UserPath
+        })
+        foreach ($required in @('Action', 'Root', 'DesktopPath')) {
+            if ($required -notin $parameterNames) {
+                throw "KoboldCpp manager is missing the $required parameter."
+            }
+        }
+
+        if (-not (Test-Path -LiteralPath $manager -PathType Leaf)) {
+            [IO.File]::Move($candidate, $manager)
+        }
+        elseif ((Get-FileHash -LiteralPath $manager -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash) {
+            [IO.File]::Replace($candidate, $manager, "$manager.previous", $true)
+        }
+        & $manager -Action Repair -Root $Root -DesktopPath $DesktopPath
+        Write-SetupLog 'Verified optional KoboldCpp desktop shortcut and persistent configuration.'
+    }
+    catch {
+        # A failed optional integration must not stop the normal SalsaNOW session.
+        Write-SetupLog "WARNING: KoboldCpp shortcut could not be repaired: $($_.Exception.Message)"
+    }
+    finally {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Test-MicrosoftLoginTls {
     try {
         $response = Invoke-WebRequest `
