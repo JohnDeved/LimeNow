@@ -1,0 +1,45 @@
+name: Test KoboldCpp
+
+on:
+  pull_request:
+    paths:
+      - install.ps1
+      - setup.ps1
+      - koboldcpp.ps1
+      - tools/Test-KoboldCpp*.ps1
+      - .github/workflows/test-koboldcpp.yml
+  push:
+    branches: [main, feat/portable-koboldcpp]
+    paths:
+      - install.ps1
+      - setup.ps1
+      - koboldcpp.ps1
+      - tools/Test-KoboldCpp*.ps1
+      - .github/workflows/test-koboldcpp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows PowerShell 5.1 and portable executable
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Installer and persistence checks
+        shell: powershell
+        run: |
+          .\tools\Test-KoboldCpp.ps1
+          .\tools\Test-KoboldCppIntegration.ps1
+      - name: Existing startup and tool-update regression checks
+        shell: powershell
+        run: |
+          .\tools\Test-StartupExperience.ps1
+          .\tools\Test-ToolUpdates.ps1
+      - name: Official binary and loopback web UI smoke test
+        shell: powershell
+        run: .\tools\Test-KoboldCpp.ps1 -LiveDownload
