@@ -2480,6 +2480,65 @@ function Ensure-ModrinthShortcut {
     Write-SetupLog 'Verified persistent Modrinth desktop shortcut.'
 }
 
+function Ensure-KoboldCppIntegration {
+    [CmdletBinding()]
+    param(
+        [string]$Root = (Join-Path $limeNowAppsRoot 'KoboldCpp'),
+        [string]$DesktopPath = [Environment]::GetFolderPath('Desktop')
+    )
+
+    # Only the small manager and shortcut are installed at startup; no executable/model download.
+    $manager = Join-Path $Root 'koboldcpp.ps1'
+    $remoteUrl = 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/koboldcpp.ps1'
+    $candidate = $null
+    try {
+        New-Item -ItemType Directory -Path $Root -Force | Out-Null
+        $candidate = Join-Path $Root ('koboldcpp-manager-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+        Get-LimeNowManagedScriptCandidate -LocalPath $manager -RemoteUrl $remoteUrl -CandidatePath $candidate -Description 'KoboldCpp manager'
+
+        $content = Get-Content -LiteralPath $candidate -Raw
+        if ($content -notmatch '(?m)^# LIMENOW_KOBOLDCPP_SCRIPT\r?$') {
+            throw 'Unrecognized KoboldCpp manager: missing script marker.'
+        }
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $candidate,
+            [ref]$null,
+            [ref]$errors
+        )
+        if ($errors.Count -gt 0 -or -not $ast.ParamBlock) {
+            throw 'Invalid KoboldCpp manager syntax or parameter block.'
+        }
+        $parameterNames = @($ast.ParamBlock.Parameters | ForEach-Object {
+            $_.Name.VariablePath.UserPath
+        })
+        foreach ($required in @('Action', 'Root', 'DesktopPath')) {
+            if ($required -notin $parameterNames) {
+                throw "KoboldCpp manager is missing the $required parameter."
+            }
+        }
+
+        if (-not (Test-Path -LiteralPath $manager -PathType Leaf)) {
+            [IO.File]::Move($candidate, $manager)
+        }
+        elseif ((Get-FileHash -LiteralPath $manager -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash) {
+            [IO.File]::Replace($candidate, $manager, "$manager.previous", $true)
+        }
+        & $manager -Action Repair -Root $Root -DesktopPath $DesktopPath
+        Write-SetupLog 'Verified optional KoboldCpp desktop shortcut and persistent configuration.'
+    }
+    catch {
+        # A failed optional integration must not stop the normal SalsaNOW session.
+        Write-SetupLog "WARNING: KoboldCpp shortcut could not be repaired: $($_.Exception.Message)"
+    }
+    finally {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Test-MicrosoftLoginTls {
     try {
         $response = Invoke-WebRequest `
@@ -2522,6 +2581,7 @@ try {
     }
     Ensure-SetupCopies
     Ensure-StartupHook
+    Ensure-KoboldCppIntegration
     Assert-LimeNowNoPendingToolRecovery -SetupRoot $setupRoot
     Repair-NodeAndNpm
     Repair-Git

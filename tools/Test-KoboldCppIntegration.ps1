@@ -24,7 +24,7 @@ foreach ($file in @('install.ps1', 'setup.ps1')) {
     if ($errors.Count) { throw "Syntax errors in ${file}: $($errors -join '; ')" }
     $names = if ($file -eq 'install.ps1') {
         @('Get-KoboldCppStartupContent', 'Install-KoboldCppIntegration')
-    } else { @('Ensure-StartupHook') }
+    } else { @('Ensure-StartupHook', 'Get-LimeNowManagedScriptCandidate', 'Assert-PowerShellScriptSyntax', 'Ensure-KoboldCppIntegration') }
     foreach ($name in $names) {
         $nodes = @($ast.FindAll({ param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -35,7 +35,7 @@ foreach ($file in @('install.ps1', 'setup.ps1')) {
 }
 $script:downloadMode = 'valid'
 function Invoke-WebRequest {
-    param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec, $Headers)
     if ($Uri -ne 'https://raw.githubusercontent.com/JohnDeved/LimeNow/main/koboldcpp.ps1') {
         throw 'Unexpected network request in installer test'
     }
@@ -92,6 +92,44 @@ try {
     Assert-True ($updated.Contains('REM === SALSANOW EASY SETUP BEGIN ===')) 'AI repair preserves core LimeNow startup'
     Assert-Throws { Get-KoboldCppStartupContent -Content '@rem >>> LIMENOW_KOBOLDCPP >>>' -Root $root } 'Incomplete AI block is rejected'
     Assert-Throws { Get-KoboldCppStartupContent -Content '' -Root 'C:\bad%PATH%' } 'Batch-variable path injection is rejected'
+    # Normal startup must activate a fresh installation, without requiring install.ps1 again.
+    $autoRoot = Join-Path $testRoot 'Auto AI'
+    $autoDesktop = Join-Path $testRoot 'Auto Desktop'
+    $script:downloadMode = 'valid'
+    $RefreshManagedScripts = $false
+    Ensure-KoboldCppIntegration -Root $autoRoot -DesktopPath $autoDesktop
+    $autoManager = Join-Path $autoRoot 'koboldcpp.ps1'
+    $autoConfig = Join-Path $autoRoot 'Config\LimeNow.kcpps'
+    Assert-True (Test-Path -LiteralPath $autoManager) 'Core startup installs the optional manager without rerunning install.ps1'
+    Assert-True (Test-Path -LiteralPath (Join-Path $autoDesktop 'KoboldCpp.lnk')) 'Core startup repairs the desktop shortcut'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $autoRoot 'Application'))) 'Core startup does not download the executable'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $autoRoot 'Models')).Count -eq 0) 'Core startup does not download a model'
+    $autoHash = (Get-FileHash -LiteralPath $autoManager).Hash
+    $cfg = Get-Content -LiteralPath $autoConfig -Raw | ConvertFrom-Json
+    $cfg.contextsize = 8192
+    $cfg | ConvertTo-Json | Set-Content -LiteralPath $autoConfig -Encoding UTF8
+    Remove-Item -LiteralPath (Join-Path $autoDesktop 'KoboldCpp.lnk')
+    Ensure-KoboldCppIntegration -Root $autoRoot -DesktopPath $autoDesktop
+    Assert-True (Test-Path -LiteralPath (Join-Path $autoDesktop 'KoboldCpp.lnk')) 'Core startup restores a missing desktop shortcut'
+    Assert-True ((Get-Content -LiteralPath $autoConfig -Raw | ConvertFrom-Json).contextsize -eq 8192) 'Core startup preserves custom settings'
+    $RefreshManagedScripts = $true
+    $script:downloadMode = 'invalid'
+    Ensure-KoboldCppIntegration -Root $autoRoot -DesktopPath $autoDesktop
+    Assert-True ((Get-FileHash -LiteralPath $autoManager).Hash -eq $autoHash) 'Invalid refreshed manager is rejected without losing known-good copy'
+    $script:downloadMode = 'offline'
+    Ensure-KoboldCppIntegration -Root $autoRoot -DesktopPath $autoDesktop
+    Assert-True ((Get-FileHash -LiteralPath $autoManager).Hash -eq $autoHash) 'Offline startup retains the known-good manager'
+    $script:downloadMode = 'valid'
+    Ensure-KoboldCppIntegration -Root $autoRoot -DesktopPath $autoDesktop
+    Assert-True ((Get-FileHash -LiteralPath $autoManager).Hash -eq $autoHash) 'Online startup refresh remains idempotent'
+    $script:downloadMode = 'offline'
+    $freshRoot = Join-Path $testRoot 'Offline AI'
+    Ensure-KoboldCppIntegration -Root $freshRoot -DesktopPath $autoDesktop
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $freshRoot 'koboldcpp.ps1'))) 'Offline first startup fails optional install safely'
+    $source = [IO.File]::ReadAllText((Join-Path $repo 'setup.ps1'))
+    Assert-True ($source -match '(?m)^    Ensure-KoboldCppIntegration\s*$') 'Normal LimeNow setup invokes optional integration automatically'
+    $RefreshManagedScripts = $false
+
     Write-Host "Passed $checks KoboldCpp integration checks."
 }
 finally {
