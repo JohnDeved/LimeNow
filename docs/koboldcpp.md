@@ -4,9 +4,10 @@ LimeNow's installer adds a **KoboldCpp** desktop shortcut. It is opt-in: the
 session startup hook repairs the shortcut and default configuration only. It
 does not download an executable, download a model, or start an inference server.
 
-**Existing LimeNow installations must rerun `install.ps1` once after this change
-is merged.** The core setup's automatic update alone does not install this
-additional startup hook. Core `setup.ps1` remains unchanged.
+**The normal LimeNow startup updater installs/repairs the KoboldCpp manager
+and shortcut automatically**, even for existing installations. No separate
+LimeNow GitHub release or installer rerun is necessary. The executable and
+models remain opt-in downloads.
 
 ## Use it
 
@@ -80,11 +81,13 @@ does not automatically configure a voice pipeline.
 
 ## Updates and repairs
 
-Rerunning the LimeNow installer refreshes the manager script, validates its
-PowerShell syntax and marker, and retains the prior copy if refresh fails. The
-separate managed block in `StartupBatch.bat` preserves the core LimeNow hook and
-unrelated commands. **Session startup only repairs local files and the shortcut;
-it does not check for KoboldCpp manager or executable updates.**
+Normal LimeNow session startup retrieves or refreshes the small manager
+script from `main`, checks PowerShell syntax, the script marker and parameters,
+and retains the prior copy on invalid or unavailable updates. It then repairs
+the shortcut and local configuration. Existing installations that used the
+older separate KoboldCpp startup hook can also continue to work.
+
+**Session startup never downloads the KoboldCpp executable or a model.**
 
 The application is downloaded on first deliberate use. To explicitly check for
 and install the latest official stable executable, close KoboldCpp and run:
