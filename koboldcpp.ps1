@@ -159,10 +159,12 @@ function Install-KoboldCpp {
         if ($movedOld) { Remove-Item -LiteralPath $backup -Recurse -Force }
     }
     finally {
-        if ($stage -and (Test-Path -LiteralPath $stage)) {
-            Remove-Item -LiteralPath $stage -Recurse -Force
+        try {
+            if ($stage -and (Test-Path -LiteralPath $stage)) {
+                Remove-Item -LiteralPath $stage -Recurse -Force
+            }
         }
-        if ($lock) { $lock.Dispose() }
+        finally { if ($lock) { $lock.Dispose() } }
     }
 }
 
@@ -175,13 +177,15 @@ function Initialize-KoboldCppStorage {
     }
     $configPath = Join-Path $Root 'Config\LimeNow.kcpps'
     if (-not (Test-Path -LiteralPath $configPath)) {
-        [ordered]@{
+        $json = [ordered]@{
             host = '127.0.0.1'; port = 5001; port_param = 5001
             contextsize = 4096; gpulayers = -1; showgui = $true
             launch = $true; remotetunnel = $false
             downloaddir = (Join-Path $Root 'Models')
             savedatafile = (Join-Path $Root 'Saves\stories.jsondb')
-        } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
+        } | ConvertTo-Json
+        # Windows PowerShell's Set-Content -Encoding UTF8 adds a BOM, unlike Python's JSON writer.
+        [IO.File]::WriteAllText($configPath, $json, [Text.UTF8Encoding]::new($false))
     }
 }
 
@@ -190,7 +194,12 @@ function Ensure-KoboldCppShortcut {
     New-Item -ItemType Directory -Path $DesktopPath -Force | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path $DesktopPath 'KoboldCpp.lnk'))
-    $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    # Reuse SalsaNOW's existing PowerShell host when present, as core LimeNow does.
+    $powerShell = 'I:\Apps\SalsaNOW\SilentApps\Powershell\pwsh.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        $powerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    }
+    $shortcut.TargetPath = $powerShell
     $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $Root 'koboldcpp.ps1') + '" -Action Launch -Root "' + $Root + '"'
     $shortcut.WorkingDirectory = $Root
     $shortcut.Description = 'Local AI: choose a GGUF model and GPU backend. Installs KoboldCpp only on request.'
@@ -199,7 +208,8 @@ function Ensure-KoboldCppShortcut {
 
 function Get-KoboldCppArguments {
     param([Parameter(Mandatory)][string]$Root)
-    # Full flag names override saved values. The GUI still allows deliberate user changes.
+    # Full flag names override saved values, except the upstream default-port special case.
+    # The native GUI still allows deliberate user changes.
     return @('--config', (Join-Path $Root 'Config\LimeNow.kcpps'), '--showgui',
         '--host', '127.0.0.1', '--port', '5001', '--downloaddir', (Join-Path $Root 'Models'),
         '--savedatafile', (Join-Path $Root 'Saves\stories.jsondb'), '--launch')
@@ -233,7 +243,7 @@ function Start-LimeNowKoboldCpp {
         if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
         Install-KoboldCpp -Root $Root
     }
-    if (Test-KoboldCppRunning) { throw 'KoboldCpp is already running. Use its existing launcher or open http://127.0.0.1:5001.' }
+    if (Test-KoboldCppRunning) { throw 'KoboldCpp is already running. Use its existing launcher or browser window.' }
     Show-KoboldCppDiagnostics -Root $Root
     Write-Host "Save Config to $(Join-Path $Root 'Config\LimeNow.kcpps') to remember model/backend choices."
     Write-Host 'Use Save to Server in KoboldAI Lite or export chats to the Saves folder. Browser autosave alone may be ephemeral.'
@@ -252,7 +262,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $ProgressPreference = 'SilentlyContinue'
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess -or
         $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
-        throw 'This integration requires Windows x64 and 64-bit Windows PowerShell.'
+        throw 'This integration requires Windows x64 and 64-bit PowerShell.'
     }
     try {
         switch ($Action) {
