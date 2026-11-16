@@ -83,16 +83,19 @@ function Invoke-KoboldCppProbe {
     try {
         $process = Start-Process -FilePath $Executable -ArgumentList '--version' -PassThru `
             -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        # Hold a process handle so Windows PowerShell can retrieve the exit code after it exits.
+        $null = $process.Handle
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             throw 'KoboldCpp did not finish its startup probe. Check temporary disk space and application policy.'
         }
         $process.WaitForExit()
-        $process.Refresh()
         $text = (Get-Content -LiteralPath $stdout -Raw) + (Get-Content -LiteralPath $stderr -Raw)
-        if ($process.ExitCode -ne 0 -or $text -notmatch '(?i)koboldcpp.*?(\d+\.\d+(?:\.\d+)?)') {
-            throw 'The downloaded KoboldCpp executable could not run. No driver or security settings were changed.'
+        $text = [regex]::Replace([string]$text, '\x1b\[[0-9;]*m', '')
+        $version = [regex]::Match($text, '(?im)(?:^\s*v?|\bkoboldcpp[^\r\n]*?)(?<version>\d+\.\d+(?:\.\d+)?)(?:\b|$)')
+        if ($process.ExitCode -ne 0 -or -not $version.Success) {
+            throw "KoboldCpp version probe failed (exit code $($process.ExitCode)). Output: $($text.Trim()). No driver or security settings were changed."
         }
-        return $Matches[1]
+        return $version.Groups['version'].Value
     }
     finally {
         if ($process) {
