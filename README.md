@@ -73,6 +73,23 @@ authentication on GeForce NOW machines.
 > to the underlying SalsaNOW storage may be able to use the same GitHub access.
 > See [GitHub CLI persistence and security](docs/github-cli-persistence.md).
 
+### Local AI: KoboldCpp (optional)
+
+LimeNow's normal **automatic session update** now restores a **KoboldCpp**
+desktop shortcut, including for existing SalsaNOW installations. No separate
+LimeNow release or reinstall is required once the updated setup reaches the
+session. Opening the shortcut for the first time offers to download KoboldCpp's
+official standalone Windows executable; **no large application or model is
+downloaded during startup**.
+
+Select a local GGUF file and GPU backend in KoboldCpp's graphical launcher,
+then use its bundled chat interface. Models, settings, and explicitly saved
+conversations persist under `I:\Apps\LimeNow\KoboldCpp`. Actual GPU offload
+and memory capacity still depend on the GeForce NOW session; running a 31B
+model is not guaranteed.
+
+See [KoboldCpp setup and compatibility](docs/koboldcpp.md).
+
 ### Remote development preview
 
 LimeNow includes an opt-in LimeSSH preview for normal OpenSSH clients. It runs
@@ -272,6 +289,9 @@ compatibility build, not an official Modrinth release.
 - [Inspect the official upstream Modrinth source](https://github.com/modrinth/code/tree/v0.16.1)
 
 ## Persistent locations
+
+- KoboldCpp executable, models, config and saves: `I:\Apps\LimeNow\KoboldCpp`
+
 
 - Extension setup: `I:\Apps\SalsaNOW\EasySetup`
 - Node.js: `I:\Apps\LimeNow\NodeJS`
